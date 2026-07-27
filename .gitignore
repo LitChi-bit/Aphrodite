@@ -1,0 +1,58 @@
+# ── Flutter ──
+.dart_tool/
+.packages
+build/
+*.iml
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+.pub-cache/
+.pub/
+*.g.dart
+*.gr.dart
+*.freezed.dart
+
+# ── IDE ──
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── 安全：参考项目（含 Firebase 凭证等敏感信息） ──
+Solian-3/
+
+# ── 安全：密钥与凭证 ──
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+service-account*.json
+firebase-adminsdk*.json
+google-services.json
+GoogleService-Info.plist
+id_rsa*
+*.log
+
+# ── 安全：项目工具数据 ──
+.workbuddy/
+
+# ── 非源码：内部文档与测试 ──
+*开发计划书*.md
+test/
+
+# ── 构建产物 ──
+*.apk
+*.aab
+*.ipa
+*.app.zip
+coverage/
