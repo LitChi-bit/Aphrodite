@@ -79,4 +79,4 @@ lib/
 
 ## 开源协议
 
-GNU Affero General Public License v3.0 or later. 详见 [LICENSE](LICENSE)。
+MIT License. 详见 [LICENSE](LICENSE)。
