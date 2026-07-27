@@ -84,6 +84,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                 : Icons.visibility_off_outlined)),
                       ),
                     ),
+                    if (state.errorMessage != null) ...[
+                      Text(
+                        state.errorMessage!,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
                     const SizedBox(height: 20),
                     FilledButton(
                       onPressed: state.status == AuthStatus.authenticating
@@ -119,7 +129,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     if (!mounted) return;
     if (ok) {
       await Navigator.of(context).pushReplacementNamed(AppRouter.home);
-    } else {
+    } else if (_loginController.text.trim().isEmpty ||
+        _passwordController.text.isEmpty) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('请输入账号和密码')));
     }
