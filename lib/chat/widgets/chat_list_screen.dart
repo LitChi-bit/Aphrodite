@@ -13,6 +13,7 @@ class ChatListScreen extends ConsumerStatefulWidget {
 }
 
 class _ChatListScreenState extends ConsumerState<ChatListScreen> {
+  bool _isSearchVisible = false;
   String _query = '';
 
   @override
@@ -46,7 +47,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             // 搜索栏（可折叠）
-            if (_query.isNotEmpty)
+            if (_isSearchVisible)
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -56,7 +57,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                     trailing: [
                       IconButton(
                         icon: const Icon(Icons.close),
-                        onPressed: () => setState(() => _query = ''),
+                        onPressed: _closeSearch,
                       ),
                     ],
                     elevation: const WidgetStatePropertyAll(0),
@@ -138,9 +139,17 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
   }
 
   void _toggleSearch() {
+    if (_isSearchVisible) {
+      _closeSearch();
+      return;
+    }
+    setState(() => _isSearchVisible = true);
+  }
+
+  void _closeSearch() {
     setState(() {
-      _query = _query.isEmpty ? ' ' : '';
-      if (_query == ' ') _query = '';
+      _isSearchVisible = false;
+      _query = '';
     });
   }
 }
@@ -166,7 +175,8 @@ class _AppDrawer extends StatelessWidget {
                   CircleAvatar(
                     radius: 30,
                     backgroundColor: scheme.primary,
-                    child: Icon(Icons.person, size: 32, color: scheme.onPrimary),
+                    child:
+                        Icon(Icons.person, size: 32, color: scheme.onPrimary),
                   ),
                   const SizedBox(height: 12),
                   Text('未登录',
@@ -304,8 +314,7 @@ class _ConversationTile extends StatelessWidget {
       ),
       subtitle: Row(
         children: [
-          if (conversation.encryptionState ==
-              ConversationEncryptionState.ready)
+          if (conversation.encryptionState == ConversationEncryptionState.ready)
             Padding(
               padding: const EdgeInsets.only(right: 4),
               child: Icon(Icons.lock, size: 13, color: scheme.primary),
