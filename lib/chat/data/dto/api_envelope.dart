@@ -10,12 +10,28 @@ class ApiEnvelope<T> {
     Map<String, Object?> json,
     T Function(Object? json) decodeData,
   ) {
-    final meta = json['meta'];
+    final requestId = json['request_id'];
+    if (requestId is! String || requestId.isEmpty) {
+      throw const FormatException('request_id must be a non-empty string');
+    }
+    if (!json.containsKey('data')) {
+      throw const FormatException('data is required');
+    }
+
+    final metaValue = json['meta'];
+    if (metaValue != null && metaValue is! Map<String, Object?>) {
+      throw const FormatException('meta must be a JSON object');
+    }
+    final meta = metaValue as Map<String, Object?>?;
+    final nextCursor = meta?['next_cursor'];
+    if (nextCursor != null && nextCursor is! String) {
+      throw const FormatException('meta.next_cursor must be a string');
+    }
+
     return ApiEnvelope(
-      requestId: json['request_id'] as String,
+      requestId: requestId,
       data: decodeData(json['data']),
-      nextCursor:
-          meta is Map<String, Object?> ? meta['next_cursor'] as String? : null,
+      nextCursor: nextCursor as String?,
     );
   }
 }

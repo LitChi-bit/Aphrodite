@@ -1,5 +1,4 @@
 import '../../core/network/network_client.dart';
-import '../models/message.dart';
 import 'dto/api_envelope.dart';
 import 'dto/conversation_dto.dart';
 import 'dto/message_dto.dart';
@@ -69,6 +68,4 @@ class ChatApi {
     );
     return envelope.data;
   }
-
-  ChatMessage decodeMessage(MessageDto dto) => dto.toDomain();
 }
