@@ -33,15 +33,28 @@ type Device struct {
 }
 
 type LoginChallenge struct {
-	ID           string
-	AccountID    string
-	DeviceID     string
-	SecretHash   []byte
-	AttemptCount int
+	ID                string
+	AccountID         string
+	DeviceID          string
+	DeviceName        string
+	DevicePlatform    string
+	IdentityPublicKey []byte
+	AttemptCount      int
 	VerifiedAt   *time.Time
 	ConsumedAt   *time.Time
 	ExpiresAt    time.Time
 	CreatedAt    time.Time
+}
+
+type AuthorizationCode struct {
+	ID          string
+	ChallengeID string
+	AccountID   string
+	DeviceID    string
+	CodeHash    []byte
+	ConsumedAt  *time.Time
+	ExpiresAt   time.Time
+	CreatedAt   time.Time
 }
 
 type Session struct {
@@ -59,6 +72,7 @@ type RefreshToken struct {
 	SessionID  string
 	TokenHash  []byte
 	ReplacedBy *string
+	RotatedAt  *time.Time
 	RevokedAt  *time.Time
 	ExpiresAt  time.Time
 	CreatedAt  time.Time
@@ -73,6 +87,10 @@ func (challenge LoginChallenge) IsUsable(now time.Time) bool {
 		challenge.ConsumedAt == nil &&
 		challenge.AttemptCount < 5 &&
 		now.Before(challenge.ExpiresAt)
+}
+
+func (code AuthorizationCode) IsUsable(now time.Time) bool {
+	return code.ConsumedAt == nil && now.Before(code.ExpiresAt)
 }
 
 func (session Session) IsActive(now time.Time) bool {

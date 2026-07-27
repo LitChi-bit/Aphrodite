@@ -3,14 +3,16 @@ package auth
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 var (
 	ErrAccountNotFound     = errors.New("account not found")
 	ErrDeviceNotFound      = errors.New("device not found")
 	ErrChallengeNotFound   = errors.New("login challenge not found")
-	ErrSessionNotFound     = errors.New("session not found")
-	ErrRefreshTokenInvalid = errors.New("refresh token invalid")
+	ErrAuthorizationCodeInvalid = errors.New("authorization code invalid")
+	ErrSessionNotFound          = errors.New("session not found")
+	ErrRefreshTokenInvalid      = errors.New("refresh token invalid")
 )
 
 type AccountRepository interface {
@@ -19,7 +21,6 @@ type AccountRepository interface {
 }
 
 type DeviceRepository interface {
-	Upsert(ctx context.Context, device Device) error
 	FindByID(ctx context.Context, deviceID string) (Device, error)
 	ListByAccount(ctx context.Context, accountID string) ([]Device, error)
 	Revoke(ctx context.Context, accountID, deviceID string) error
@@ -27,16 +28,28 @@ type DeviceRepository interface {
 
 type ChallengeRepository interface {
 	Create(ctx context.Context, challenge LoginChallenge) error
-	FindByID(ctx context.Context, challengeID string) (LoginChallenge, error)
-	RecordFailedAttempt(ctx context.Context, challengeID string) error
-	MarkVerified(ctx context.Context, challengeID string) error
-	Consume(ctx context.Context, challengeID string) error
+	AcquirePasswordAttempt(ctx context.Context, challengeID string, now time.Time) (LoginChallenge, error)
+	VerifyRegisterDeviceAndCreateAuthorizationCode(ctx context.Context, challengeID string, now time.Time, code AuthorizationCode) error
 }
 
 type SessionRepository interface {
-	Create(ctx context.Context, session Session, refreshToken RefreshToken) error
-	FindByRefreshTokenHash(ctx context.Context, tokenHash []byte) (Session, RefreshToken, error)
-	RotateRefreshToken(ctx context.Context, currentTokenID string, replacement RefreshToken) error
+	ExchangeAuthorizationCode(
+		ctx context.Context,
+		codeHash []byte,
+		deviceID string,
+		now time.Time,
+		session Session,
+		refreshToken RefreshToken,
+		accessExpiresAt time.Time,
+	) (AuthorizationCode, Session, RefreshToken, error)
+	RotateRefreshToken(
+		ctx context.Context,
+		currentTokenHash []byte,
+		deviceID string,
+		now time.Time,
+		replacement RefreshToken,
+		accessExpiresAt time.Time,
+	) (Session, RefreshToken, error)
 	Revoke(ctx context.Context, sessionID string) error
 	RevokeByDevice(ctx context.Context, accountID, deviceID string) error
 }
@@ -47,4 +60,16 @@ type PasswordVerifier interface {
 
 type TokenHasher interface {
 	HashToken(token string) []byte
+}
+
+type CredentialGenerator interface {
+	NewOpaqueCredential(prefix string) (string, error)
+}
+
+type IDGenerator interface {
+	NewID(prefix string) (string, error)
+}
+
+type AccessTokenIssuer interface {
+	IssueAccessToken(accountID, deviceID, sessionID string, expiresAt time.Time) (string, error)
 }
