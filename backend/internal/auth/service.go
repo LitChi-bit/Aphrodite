@@ -21,20 +21,20 @@ var (
 type Clock func() time.Time
 
 type Service struct {
-	accounts       AccountRepository
-	devices        DeviceRepository
-	challenges     ChallengeRepository
-	sessions       SessionRepository
-	passwords      PasswordVerifier
-	hasher         TokenHasher
-	credentials    CredentialGenerator
-	ids            IDGenerator
-	accessTokens   AccessTokenIssuer
-	now            Clock
-	challengeTTL   time.Duration
-	codeTTL        time.Duration
-	sessionTTL     time.Duration
-	refreshTTL     time.Duration
+	accounts     AccountRepository
+	devices      DeviceRepository
+	challenges   ChallengeRepository
+	sessions     SessionRepository
+	passwords    PasswordVerifier
+	hasher       TokenHasher
+	credentials  CredentialGenerator
+	ids          IDGenerator
+	accessTokens AccessTokenIssuer
+	now          Clock
+	challengeTTL time.Duration
+	codeTTL      time.Duration
+	sessionTTL   time.Duration
+	refreshTTL   time.Duration
 }
 
 type Dependencies struct {
@@ -64,7 +64,7 @@ func NewService(dependencies Dependencies) (*Service, error) {
 	return &Service{
 		accounts: dependencies.Accounts, devices: dependencies.Devices,
 		challenges: dependencies.Challenges,
-		sessions: dependencies.Sessions, passwords: dependencies.Passwords,
+		sessions:   dependencies.Sessions, passwords: dependencies.Passwords,
 		hasher: dependencies.Hasher, credentials: dependencies.Credentials,
 		ids: dependencies.IDs, accessTokens: dependencies.AccessTokens,
 		now: dependencies.Now, challengeTTL: 5 * time.Minute,
@@ -121,7 +121,7 @@ func (s *Service) CreateChallenge(ctx context.Context, input CreateChallengeInpu
 		ID: challengeID, AccountID: account.ID, DeviceID: input.DeviceID,
 		DeviceName: input.DeviceName, DevicePlatform: input.Platform,
 		IdentityPublicKey: append([]byte(nil), input.IdentityPublicKey...),
-		ExpiresAt: now.Add(s.challengeTTL), CreatedAt: now,
+		ExpiresAt:         now.Add(s.challengeTTL), CreatedAt: now,
 	}
 	if err := s.challenges.Create(ctx, challenge); err != nil {
 		return ChallengeResult{}, fmt.Errorf("save challenge: %w", err)
@@ -272,6 +272,41 @@ func (s *Service) Refresh(ctx context.Context, plainRefresh, deviceID string) (T
 	}
 	return TokenPair{AccessToken: access, RefreshToken: plainReplacement,
 		AccessExpiresIn: accessExpiry.Sub(now), RefreshExpiresIn: refreshExpiry.Sub(now)}, nil
+}
+
+func (s *Service) Logout(ctx context.Context, plainRefresh, deviceID string) error {
+	if strings.TrimSpace(plainRefresh) == "" || strings.TrimSpace(deviceID) == "" {
+		return ErrRefreshTokenInvalid
+	}
+	if err := s.sessions.RevokeByRefreshToken(
+		ctx, s.hasher.HashToken(plainRefresh), deviceID, s.now().UTC(),
+	); err != nil {
+		return ErrRefreshTokenInvalid
+	}
+	return nil
+}
+
+func (s *Service) AuthenticateAccessToken(ctx context.Context, verifier AccessTokenVerifier, token string) (AccessTokenClaims, error) {
+	if verifier == nil || strings.TrimSpace(token) == "" {
+		return AccessTokenClaims{}, ErrAccessTokenInvalid
+	}
+	claims, err := verifier.VerifyAccessToken(token)
+	if err != nil {
+		return AccessTokenClaims{}, ErrAccessTokenInvalid
+	}
+	now := s.now().UTC()
+	if _, err := s.sessions.FindActive(ctx, claims.SessionID, claims.AccountID, claims.DeviceID, now); err != nil {
+		return AccessTokenClaims{}, ErrAccessTokenInvalid
+	}
+	device, err := s.devices.FindByID(ctx, claims.DeviceID)
+	if err != nil || device.AccountID != claims.AccountID || device.IsRevoked() {
+		return AccessTokenClaims{}, ErrAccessTokenInvalid
+	}
+	account, err := s.accounts.FindByID(ctx, claims.AccountID)
+	if err != nil || account.Status != AccountStatusActive {
+		return AccessTokenClaims{}, ErrAccessTokenInvalid
+	}
+	return claims, nil
 }
 
 func (s *Service) RevokeDevice(ctx context.Context, accountID, deviceID string) error {

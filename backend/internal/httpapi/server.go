@@ -14,7 +14,9 @@ type Server struct {
 type Option func(*serverOptions)
 
 type serverOptions struct {
-	authService AuthService
+	authService      AuthService
+	challengeLimiter RateLimiter
+	tokenLimiter     RateLimiter
 }
 
 func WithAuthService(service AuthService) Option {
@@ -23,17 +25,37 @@ func WithAuthService(service AuthService) Option {
 	}
 }
 
+func WithAuthRateLimiters(challengeLimiter, tokenLimiter RateLimiter) Option {
+	return func(options *serverOptions) {
+		options.challengeLimiter = challengeLimiter
+		options.tokenLimiter = tokenLimiter
+	}
+}
+
 func NewServer(logger *slog.Logger, options ...Option) *Server {
-	configuration := serverOptions{}
+	configuration := serverOptions{
+		challengeLimiter: newFixedWindowRateLimiter(10, time.Minute),
+		tokenLimiter:     newFixedWindowRateLimiter(30, time.Minute),
+	}
 	for _, option := range options {
 		option(&configuration)
+	}
+	if configuration.challengeLimiter == nil {
+		configuration.challengeLimiter = newFixedWindowRateLimiter(10, time.Minute)
+	}
+	if configuration.tokenLimiter == nil {
+		configuration.tokenLimiter = newFixedWindowRateLimiter(30, time.Minute)
 	}
 	server := &Server{logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /v1/health", server.health)
 	if configuration.authService != nil {
-		authHandler{service: configuration.authService}.register(mux)
+		authHandler{
+			service:          configuration.authService,
+			challengeLimiter: configuration.challengeLimiter,
+			tokenLimiter:     configuration.tokenLimiter,
+		}.register(mux)
 	}
 	mux.HandleFunc("/", server.notFound)
 	server.handler = withRequestID(recoverPanic(logger, mux))

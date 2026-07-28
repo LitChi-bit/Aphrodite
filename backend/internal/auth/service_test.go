@@ -96,6 +96,32 @@ func TestInvalidPasswordRecordsAttemptAndLocksChallenge(t *testing.T) {
 	}
 }
 
+func TestLogoutRevokesSessionForRefreshToken(t *testing.T) {
+	fixture := newServiceFixture(t)
+	pair := fixture.issuePair(t)
+
+	if err := fixture.service.Logout(context.Background(), pair.RefreshToken, "device-example"); err != nil {
+		t.Fatalf("Logout() error = %v", err)
+	}
+	if !fixture.sessions.isRevoked(fixture.sessions.onlySessionID()) {
+		t.Fatal("logout must revoke the refresh token session")
+	}
+}
+
+func TestRotatedRefreshTokenCannotLogoutCurrentSession(t *testing.T) {
+	fixture := newServiceFixture(t)
+	pair := fixture.issuePair(t)
+	if _, err := fixture.service.Refresh(context.Background(), pair.RefreshToken, "device-example"); err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	if err := fixture.service.Logout(context.Background(), pair.RefreshToken, "device-example"); !errors.Is(err, ErrRefreshTokenInvalid) {
+		t.Fatalf("old refresh token logout error = %v", err)
+	}
+	if fixture.sessions.isRevoked(fixture.sessions.onlySessionID()) {
+		t.Fatal("old rotated refresh token must not revoke the active session")
+	}
+}
+
 func TestRevokedDeviceCannotRefresh(t *testing.T) {
 	fixture := newServiceFixture(t)
 	ctx := context.Background()
@@ -112,8 +138,58 @@ func TestRevokedDeviceCannotRefresh(t *testing.T) {
 	}
 }
 
+func TestAuthenticateAccessTokenChecksCurrentAuthorizationState(t *testing.T) {
+	fixture := newServiceFixture(t)
+	pair := fixture.issuePair(t)
+	claims := AccessTokenClaims{
+		AccountID: "account-example", DeviceID: "device-example", SessionID: fixture.sessions.onlySessionID(),
+		IssuedAt: time.Date(2026, 7, 27, 8, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 7, 27, 8, 15, 0, 0, time.UTC),
+	}
+	verifier := staticAccessTokenVerifier{claims: claims}
+
+	if got, err := fixture.service.AuthenticateAccessToken(context.Background(), verifier, "access-example"); err != nil || got.SessionID != claims.SessionID {
+		t.Fatalf("AuthenticateAccessToken() claims=%#v error=%v", got, err)
+	}
+	if err := fixture.service.Logout(context.Background(), pair.RefreshToken, "device-example"); err != nil {
+		t.Fatalf("Logout() error = %v", err)
+	}
+	if _, err := fixture.service.AuthenticateAccessToken(context.Background(), verifier, "access-example"); !errors.Is(err, ErrAccessTokenInvalid) {
+		t.Fatalf("revoked session token error = %v", err)
+	}
+
+	fixture = newServiceFixture(t)
+	fixture.issuePair(t)
+	claims.SessionID = fixture.sessions.onlySessionID()
+	verifier = staticAccessTokenVerifier{claims: claims}
+	if err := fixture.service.RevokeDevice(context.Background(), "account-example", "device-example"); err != nil {
+		t.Fatalf("RevokeDevice() error = %v", err)
+	}
+	if _, err := fixture.service.AuthenticateAccessToken(context.Background(), verifier, "access-example"); !errors.Is(err, ErrAccessTokenInvalid) {
+		t.Fatalf("revoked device token error = %v", err)
+	}
+
+	fixture = newServiceFixture(t)
+	fixture.issuePair(t)
+	claims.SessionID = fixture.sessions.onlySessionID()
+	verifier = staticAccessTokenVerifier{claims: claims}
+	fixture.accounts.account.Status = AccountStatusDisabled
+	if _, err := fixture.service.AuthenticateAccessToken(context.Background(), verifier, "access-example"); !errors.Is(err, ErrAccessTokenInvalid) {
+		t.Fatalf("disabled account token error = %v", err)
+	}
+}
+
+type staticAccessTokenVerifier struct {
+	claims AccessTokenClaims
+	err    error
+}
+
+func (verifier staticAccessTokenVerifier) VerifyAccessToken(string) (AccessTokenClaims, error) {
+	return verifier.claims, verifier.err
+}
+
 type serviceFixture struct {
 	service    *Service
+	accounts   *memoryAccountRepository
 	devices    *memoryDeviceRepository
 	sessions   *memorySessionRepository
 	challenges *memoryChallengeRepository
@@ -140,7 +216,7 @@ func newServiceFixture(t *testing.T) serviceFixture {
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
-	return serviceFixture{service: service, devices: devices, sessions: sessions, challenges: challenges}
+	return serviceFixture{service: service, accounts: accounts, devices: devices, sessions: sessions, challenges: challenges}
 }
 
 func (fixture serviceFixture) issuePair(t *testing.T) TokenPair {
@@ -150,60 +226,247 @@ func (fixture serviceFixture) issuePair(t *testing.T) TokenPair {
 		Login: "example-user", DeviceID: "device-example", DeviceName: "Example device",
 		Platform: "android", IdentityPublicKey: []byte("example-public-key"),
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	authorization, err := fixture.service.VerifyPassword(ctx, VerifyPasswordInput{ChallengeID: challenge.ChallengeID, Password: "example-password"})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	pair, err := fixture.service.ExchangeAuthorizationCode(ctx, authorization.AuthorizationCode, "device-example")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	return pair
 }
 
 type memoryAccountRepository struct{ account Account }
+
 func (repo *memoryAccountRepository) FindByLogin(_ context.Context, login string) (Account, error) {
-	if login == repo.account.Username || login == repo.account.Email { return repo.account, nil }
+	if login == repo.account.Username || login == repo.account.Email {
+		return repo.account, nil
+	}
 	return Account{}, ErrAccountNotFound
 }
 func (repo *memoryAccountRepository) FindByID(_ context.Context, id string) (Account, error) {
-	if id == repo.account.ID { return repo.account, nil }
+	if id == repo.account.ID {
+		return repo.account, nil
+	}
 	return Account{}, ErrAccountNotFound
 }
 
 type memoryDeviceRepository struct{ items map[string]Device }
-func (repo *memoryDeviceRepository) FindByID(_ context.Context, id string) (Device, error) { device, ok := repo.items[id]; if !ok { return Device{}, ErrDeviceNotFound }; return device, nil }
-func (repo *memoryDeviceRepository) ListByAccount(_ context.Context, accountID string) ([]Device, error) { var result []Device; for _, device := range repo.items { if device.AccountID == accountID { result = append(result, device) } }; return result, nil }
-func (repo *memoryDeviceRepository) Revoke(_ context.Context, accountID, deviceID string) error { device, ok := repo.items[deviceID]; if !ok || device.AccountID != accountID { return ErrDeviceNotFound }; now := time.Now().UTC(); device.RevokedAt = &now; repo.items[deviceID] = device; return nil }
-func (repo *memoryDeviceRepository) upsertDevice(id, accountID, name, platform string, pubkey []byte, createdAt, now time.Time) { device := Device{ID: id, AccountID: accountID, Name: name, Platform: platform, IdentityPublicKey: append([]byte(nil), pubkey...), CreatedAt: createdAt, UpdatedAt: now}; repo.items[id] = device }
 
-type memoryChallengeRepository struct{ items map[string]LoginChallenge; codes map[string]AuthorizationCode; devices *memoryDeviceRepository }
-func (repo *memoryChallengeRepository) Create(_ context.Context, challenge LoginChallenge) error { repo.items[challenge.ID] = challenge; return nil }
-func (repo *memoryChallengeRepository) AcquirePasswordAttempt(_ context.Context, id string, now time.Time) (LoginChallenge, error) { challenge, ok := repo.items[id]; if !ok || challenge.VerifiedAt != nil || challenge.ConsumedAt != nil || !now.Before(challenge.ExpiresAt) { return LoginChallenge{}, ErrChallengeExpired }; if challenge.AttemptCount >= 5 { return LoginChallenge{}, ErrChallengeLocked }; challenge.AttemptCount++; repo.items[id] = challenge; return challenge, nil }
-func (repo *memoryChallengeRepository) VerifyRegisterDeviceAndCreateAuthorizationCode(_ context.Context, id string, now time.Time, code AuthorizationCode) error { challenge, ok := repo.items[id]; if !ok || challenge.VerifiedAt != nil || challenge.ConsumedAt != nil || !now.Before(challenge.ExpiresAt) || challenge.AttemptCount > 5 || code.AccountID != challenge.AccountID || code.DeviceID != challenge.DeviceID { return ErrChallengeExpired }
+func (repo *memoryDeviceRepository) FindByID(_ context.Context, id string) (Device, error) {
+	device, ok := repo.items[id]
+	if !ok {
+		return Device{}, ErrDeviceNotFound
+	}
+	return device, nil
+}
+func (repo *memoryDeviceRepository) ListByAccount(_ context.Context, accountID string) ([]Device, error) {
+	var result []Device
+	for _, device := range repo.items {
+		if device.AccountID == accountID {
+			result = append(result, device)
+		}
+	}
+	return result, nil
+}
+func (repo *memoryDeviceRepository) Revoke(_ context.Context, accountID, deviceID string) error {
+	device, ok := repo.items[deviceID]
+	if !ok || device.AccountID != accountID {
+		return ErrDeviceNotFound
+	}
+	now := time.Now().UTC()
+	device.RevokedAt = &now
+	repo.items[deviceID] = device
+	return nil
+}
+func (repo *memoryDeviceRepository) upsertDevice(id, accountID, name, platform string, pubkey []byte, createdAt, now time.Time) {
+	device := Device{ID: id, AccountID: accountID, Name: name, Platform: platform, IdentityPublicKey: append([]byte(nil), pubkey...), CreatedAt: createdAt, UpdatedAt: now}
+	repo.items[id] = device
+}
+
+type memoryChallengeRepository struct {
+	items   map[string]LoginChallenge
+	codes   map[string]AuthorizationCode
+	devices *memoryDeviceRepository
+}
+
+func (repo *memoryChallengeRepository) Create(_ context.Context, challenge LoginChallenge) error {
+	repo.items[challenge.ID] = challenge
+	return nil
+}
+func (repo *memoryChallengeRepository) AcquirePasswordAttempt(_ context.Context, id string, now time.Time) (LoginChallenge, error) {
+	challenge, ok := repo.items[id]
+	if !ok || challenge.VerifiedAt != nil || challenge.ConsumedAt != nil || !now.Before(challenge.ExpiresAt) {
+		return LoginChallenge{}, ErrChallengeExpired
+	}
+	if challenge.AttemptCount >= 5 {
+		return LoginChallenge{}, ErrChallengeLocked
+	}
+	challenge.AttemptCount++
+	repo.items[id] = challenge
+	return challenge, nil
+}
+func (repo *memoryChallengeRepository) VerifyRegisterDeviceAndCreateAuthorizationCode(_ context.Context, id string, now time.Time, code AuthorizationCode) error {
+	challenge, ok := repo.items[id]
+	if !ok || challenge.VerifiedAt != nil || challenge.ConsumedAt != nil || !now.Before(challenge.ExpiresAt) || challenge.AttemptCount > 5 || code.AccountID != challenge.AccountID || code.DeviceID != challenge.DeviceID {
+		return ErrChallengeExpired
+	}
 	// Atomically register device: idempotent upsert; reject if pubkey differs.
 	if existing, findErr := repo.devices.FindByID(nil, challenge.DeviceID); findErr == nil {
 		_ = existing // already registered, pubkey was verified during CreateChallenge
 	} else {
 		repo.devices.upsertDevice(challenge.DeviceID, challenge.AccountID, challenge.DeviceName, challenge.DevicePlatform, challenge.IdentityPublicKey, challenge.CreatedAt, now)
 	}
-	challenge.VerifiedAt = &now; repo.items[id] = challenge; repo.codes[string(code.CodeHash)] = code; return nil }
+	challenge.VerifiedAt = &now
+	repo.items[id] = challenge
+	repo.codes[string(code.CodeHash)] = code
+	return nil
+}
 
-type memorySessionRepository struct{ sessions map[string]Session; tokens map[string]RefreshToken; codes map[string]AuthorizationCode; devices *memoryDeviceRepository }
-func (repo *memorySessionRepository) ExchangeAuthorizationCode(_ context.Context, hash []byte, deviceID string, now time.Time, session Session, token RefreshToken, accessExpiresAt time.Time) (AuthorizationCode, Session, RefreshToken, error) { code, ok := repo.codes[string(hash)]; if !ok || !code.IsUsable(now) || code.DeviceID != deviceID || !accessExpiresAt.After(now) { return AuthorizationCode{}, Session{}, RefreshToken{}, ErrAuthorizationCodeInvalid }; device, deviceErr := repo.devices.FindByID(nil, deviceID); if deviceErr != nil || device.AccountID != code.AccountID || device.IsRevoked() { return AuthorizationCode{}, Session{}, RefreshToken{}, ErrDeviceRevoked }; code.ConsumedAt = &now; repo.codes[string(hash)] = code; session.AccountID = code.AccountID; token.SessionID = session.ID; repo.sessions[session.ID] = session; repo.tokens[string(token.TokenHash)] = token; return code, session, token, nil }
-func (repo *memorySessionRepository) RotateRefreshToken(_ context.Context, currentHash []byte, deviceID string, now time.Time, replacement RefreshToken, accessExpiresAt time.Time) (Session, RefreshToken, error) { token, ok := repo.tokens[string(currentHash)]; if !ok { return Session{}, RefreshToken{}, ErrRefreshTokenInvalid }; session, ok := repo.sessions[token.SessionID]; if !ok || !token.IsActive(now) || !session.IsActive(now) || session.DeviceID != deviceID || !accessExpiresAt.After(now) { if ok { revoked := now; session.RevokedAt = &revoked; repo.sessions[session.ID] = session }; return Session{}, RefreshToken{}, ErrRefreshTokenInvalid }
+type memorySessionRepository struct {
+	sessions map[string]Session
+	tokens   map[string]RefreshToken
+	codes    map[string]AuthorizationCode
+	devices  *memoryDeviceRepository
+}
+
+func (repo *memorySessionRepository) ExchangeAuthorizationCode(_ context.Context, hash []byte, deviceID string, now time.Time, session Session, token RefreshToken, accessExpiresAt time.Time) (AuthorizationCode, Session, RefreshToken, error) {
+	code, ok := repo.codes[string(hash)]
+	if !ok || !code.IsUsable(now) || code.DeviceID != deviceID || !accessExpiresAt.After(now) {
+		return AuthorizationCode{}, Session{}, RefreshToken{}, ErrAuthorizationCodeInvalid
+	}
+	device, deviceErr := repo.devices.FindByID(nil, deviceID)
+	if deviceErr != nil || device.AccountID != code.AccountID || device.IsRevoked() {
+		return AuthorizationCode{}, Session{}, RefreshToken{}, ErrDeviceRevoked
+	}
+	code.ConsumedAt = &now
+	repo.codes[string(hash)] = code
+	session.AccountID = code.AccountID
+	token.SessionID = session.ID
+	repo.sessions[session.ID] = session
+	repo.tokens[string(token.TokenHash)] = token
+	return code, session, token, nil
+}
+func (repo *memorySessionRepository) RotateRefreshToken(_ context.Context, currentHash []byte, deviceID string, now time.Time, replacement RefreshToken, accessExpiresAt time.Time) (Session, RefreshToken, error) {
+	token, ok := repo.tokens[string(currentHash)]
+	if !ok {
+		return Session{}, RefreshToken{}, ErrRefreshTokenInvalid
+	}
+	session, ok := repo.sessions[token.SessionID]
+	if !ok || !token.IsActive(now) || !session.IsActive(now) || session.DeviceID != deviceID || !accessExpiresAt.After(now) {
+		if ok {
+			revoked := now
+			session.RevokedAt = &revoked
+			repo.sessions[session.ID] = session
+		}
+		return Session{}, RefreshToken{}, ErrRefreshTokenInvalid
+	}
 	// Check device revocation atomically within rotation.
-	if device, deviceErr := repo.devices.FindByID(nil, deviceID); deviceErr != nil || device.AccountID != session.AccountID || device.IsRevoked() { revoked := now; session.RevokedAt = &revoked; repo.sessions[session.ID] = session; return Session{}, RefreshToken{}, ErrRefreshTokenInvalid }
-	token.ReplacedBy = &replacement.ID; token.RotatedAt = &now; repo.tokens[string(currentHash)] = token; replacement.SessionID = session.ID; if replacement.ExpiresAt.After(session.ExpiresAt) { replacement.ExpiresAt = session.ExpiresAt }; repo.tokens[string(replacement.TokenHash)] = replacement; return session, replacement, nil }
-func (repo *memorySessionRepository) Revoke(_ context.Context, sessionID string) error { session, ok := repo.sessions[sessionID]; if !ok { return ErrSessionNotFound }; now := time.Now().UTC(); session.RevokedAt = &now; repo.sessions[sessionID] = session; return nil }
-func (repo *memorySessionRepository) RevokeByDevice(_ context.Context, accountID, deviceID string) error { for id, session := range repo.sessions { if session.AccountID == accountID && session.DeviceID == deviceID { now := time.Now().UTC(); session.RevokedAt = &now; repo.sessions[id] = session } }; return nil }
-func (repo *memorySessionRepository) onlySessionID() string { for id := range repo.sessions { return id }; return "" }
-func (repo *memorySessionRepository) isRevoked(id string) bool { return repo.sessions[id].RevokedAt != nil }
+	if device, deviceErr := repo.devices.FindByID(nil, deviceID); deviceErr != nil || device.AccountID != session.AccountID || device.IsRevoked() {
+		revoked := now
+		session.RevokedAt = &revoked
+		repo.sessions[session.ID] = session
+		return Session{}, RefreshToken{}, ErrRefreshTokenInvalid
+	}
+	token.ReplacedBy = &replacement.ID
+	token.RotatedAt = &now
+	repo.tokens[string(currentHash)] = token
+	replacement.SessionID = session.ID
+	if replacement.ExpiresAt.After(session.ExpiresAt) {
+		replacement.ExpiresAt = session.ExpiresAt
+	}
+	repo.tokens[string(replacement.TokenHash)] = replacement
+	return session, replacement, nil
+}
+func (repo *memorySessionRepository) FindActive(_ context.Context, sessionID, accountID, deviceID string, now time.Time) (Session, error) {
+	session, ok := repo.sessions[sessionID]
+	if !ok || !session.IsActive(now) || session.AccountID != accountID || session.DeviceID != deviceID {
+		return Session{}, ErrSessionNotFound
+	}
+	return session, nil
+}
+
+func (repo *memorySessionRepository) Revoke(_ context.Context, sessionID string) error {
+	session, ok := repo.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	now := time.Now().UTC()
+	session.RevokedAt = &now
+	repo.sessions[sessionID] = session
+	return nil
+}
+func (repo *memorySessionRepository) RevokeByRefreshToken(_ context.Context, tokenHash []byte, deviceID string, now time.Time) error {
+	token, ok := repo.tokens[string(tokenHash)]
+	if !ok || !token.IsActive(now) {
+		return ErrRefreshTokenInvalid
+	}
+	session, ok := repo.sessions[token.SessionID]
+	if !ok || !session.IsActive(now) || session.DeviceID != deviceID {
+		return ErrRefreshTokenInvalid
+	}
+	session.RevokedAt = &now
+	repo.sessions[session.ID] = session
+	return nil
+}
+func (repo *memorySessionRepository) RevokeByDevice(_ context.Context, accountID, deviceID string) error {
+	for id, session := range repo.sessions {
+		if session.AccountID == accountID && session.DeviceID == deviceID {
+			now := time.Now().UTC()
+			session.RevokedAt = &now
+			repo.sessions[id] = session
+		}
+	}
+	return nil
+}
+func (repo *memorySessionRepository) onlySessionID() string {
+	for id := range repo.sessions {
+		return id
+	}
+	return ""
+}
+func (repo *memorySessionRepository) isRevoked(id string) bool {
+	return repo.sessions[id].RevokedAt != nil
+}
 
 type exactPasswordVerifier struct{}
-func (exactPasswordVerifier) VerifyPassword(encodedHash, password string) error { if encodedHash != "hash-"+password { return ErrInvalidCredentials }; return nil }
+
+func (exactPasswordVerifier) VerifyPassword(encodedHash, password string) error {
+	if encodedHash != "hash-"+password {
+		return ErrInvalidCredentials
+	}
+	return nil
+}
+
 type sha256TokenHasher struct{}
-func (sha256TokenHasher) HashToken(token string) []byte { sum := sha256.Sum256([]byte(token)); return sum[:] }
+
+func (sha256TokenHasher) HashToken(token string) []byte {
+	sum := sha256.Sum256([]byte(token))
+	return sum[:]
+}
+
 type sequenceGenerator struct{ value int }
-func (generator *sequenceGenerator) next(prefix string) string { generator.value++; return fmt.Sprintf("%s-example-%d", prefix, generator.value) }
-func (generator *sequenceGenerator) NewOpaqueCredential(prefix string) (string, error) { return generator.next(prefix), nil }
-func (generator *sequenceGenerator) NewID(prefix string) (string, error) { return generator.next(prefix), nil }
+
+func (generator *sequenceGenerator) next(prefix string) string {
+	generator.value++
+	return fmt.Sprintf("%s-example-%d", prefix, generator.value)
+}
+func (generator *sequenceGenerator) NewOpaqueCredential(prefix string) (string, error) {
+	return generator.next(prefix), nil
+}
+func (generator *sequenceGenerator) NewID(prefix string) (string, error) {
+	return generator.next(prefix), nil
+}
+
 type sequenceAccessTokenIssuer struct{ generator *sequenceGenerator }
-func (issuer sequenceAccessTokenIssuer) IssueAccessToken(accountID, deviceID, sessionID string, expiresAt time.Time) (string, error) { if len(bytes.TrimSpace([]byte(accountID))) == 0 || deviceID == "" || sessionID == "" || expiresAt.IsZero() { return "", errors.New("invalid claims") }; return issuer.generator.next("access"), nil }
+
+func (issuer sequenceAccessTokenIssuer) IssueAccessToken(accountID, deviceID, sessionID string, expiresAt time.Time) (string, error) {
+	if len(bytes.TrimSpace([]byte(accountID))) == 0 || deviceID == "" || sessionID == "" || expiresAt.IsZero() {
+		return "", errors.New("invalid claims")
+	}
+	return issuer.generator.next("access"), nil
+}

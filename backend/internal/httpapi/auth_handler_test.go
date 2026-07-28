@@ -147,6 +147,22 @@ func TestAuthorizationAndRefreshTokenGrants(t *testing.T) {
 	}
 }
 
+func TestLogoutRevokesCurrentRefreshSession(t *testing.T) {
+	service := &stubAuthService{}
+	server := NewServer(discardLogger(), WithAuthService(service))
+	response := performJSONRequest(server.Handler(), http.MethodPost, "/v1/auth/logout", `{"refresh_token":"refresh-example","device_id":"device-example"}`)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if service.logoutRefreshToken != "refresh-example" || service.logoutDeviceID != "device-example" {
+		t.Fatalf("unexpected logout input: token=%q device=%q", service.logoutRefreshToken, service.logoutDeviceID)
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("logout response must prohibit credential caching")
+	}
+}
+
 func TestTokenGrantHidesCredentialFailureDetails(t *testing.T) {
 	service := &stubAuthService{exchangeError: auth.ErrAuthorizationCodeInvalid}
 	server := NewServer(discardLogger(), WithAuthService(service))
@@ -156,17 +172,20 @@ func TestTokenGrantHidesCredentialFailureDetails(t *testing.T) {
 }
 
 type stubAuthService struct {
-	challengeInput  auth.CreateChallengeInput
-	challengeResult auth.ChallengeResult
-	challengeError  error
-	verifyInput     auth.VerifyPasswordInput
-	verifyResult    auth.AuthorizationResult
-	verifyError     error
-	exchangedCode   string
-	refreshedToken  string
-	tokenPair       auth.TokenPair
-	exchangeError   error
-	refreshError    error
+	challengeInput     auth.CreateChallengeInput
+	challengeResult    auth.ChallengeResult
+	challengeError     error
+	verifyInput        auth.VerifyPasswordInput
+	verifyResult       auth.AuthorizationResult
+	verifyError        error
+	exchangedCode      string
+	refreshedToken     string
+	logoutRefreshToken string
+	logoutDeviceID     string
+	logoutError        error
+	tokenPair          auth.TokenPair
+	exchangeError      error
+	refreshError       error
 }
 
 func (service *stubAuthService) CreateChallenge(_ context.Context, input auth.CreateChallengeInput) (auth.ChallengeResult, error) {
@@ -193,6 +212,12 @@ func (service *stubAuthService) Refresh(_ context.Context, refreshToken, deviceI
 		return auth.TokenPair{}, errors.New("device id is required")
 	}
 	return service.tokenPair, service.refreshError
+}
+
+func (service *stubAuthService) Logout(_ context.Context, refreshToken, deviceID string) error {
+	service.logoutRefreshToken = refreshToken
+	service.logoutDeviceID = deviceID
+	return service.logoutError
 }
 
 func performJSONRequest(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {

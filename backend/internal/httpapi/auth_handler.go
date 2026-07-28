@@ -21,19 +21,24 @@ type AuthService interface {
 	VerifyPassword(ctx context.Context, input auth.VerifyPasswordInput) (auth.AuthorizationResult, error)
 	ExchangeAuthorizationCode(ctx context.Context, code, deviceID string) (auth.TokenPair, error)
 	Refresh(ctx context.Context, refreshToken, deviceID string) (auth.TokenPair, error)
+	Logout(ctx context.Context, refreshToken, deviceID string) error
 }
 
 type authHandler struct {
-	service AuthService
+	service          AuthService
+	challengeLimiter RateLimiter
+	tokenLimiter     RateLimiter
 }
 
 func (handler authHandler) register(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/auth/challenges", handler.createChallenge)
-	mux.HandleFunc("POST /v1/auth/challenges/{challenge_id}/verify", handler.verifyChallenge)
-	mux.HandleFunc("POST /v1/auth/token", handler.issueToken)
+	mux.HandleFunc("POST /v1/auth/challenges", rateLimit(handler.challengeLimiter, "auth_challenge", handler.createChallenge))
+	mux.HandleFunc("POST /v1/auth/challenges/{challenge_id}/verify", rateLimit(handler.challengeLimiter, "auth_verify", handler.verifyChallenge))
+	mux.HandleFunc("POST /v1/auth/token", rateLimit(handler.tokenLimiter, "auth_token", handler.issueToken))
+	mux.HandleFunc("POST /v1/auth/logout", rateLimit(handler.tokenLimiter, "auth_logout", handler.logout))
 	mux.HandleFunc("/v1/auth/challenges", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("/v1/auth/challenges/{challenge_id}/verify", methodNotAllowed(http.MethodPost))
 	mux.HandleFunc("/v1/auth/token", methodNotAllowed(http.MethodPost))
+	mux.HandleFunc("/v1/auth/logout", methodNotAllowed(http.MethodPost))
 }
 
 func methodNotAllowed(allowedMethod string) http.HandlerFunc {
@@ -96,7 +101,7 @@ type verifyChallengeRequest struct {
 }
 
 type verifyChallengeResponse struct {
-	Verified         bool      `json:"verified"`
+	Verified          bool      `json:"verified"`
 	AuthorizationCode string    `json:"authorization_code"`
 	ExpiresAt         time.Time `json:"expires_at"`
 }
@@ -137,6 +142,29 @@ type tokenResponse struct {
 	TokenType        string `json:"token_type"`
 	ExpiresIn        int64  `json:"expires_in"`
 	RefreshExpiresIn int64  `json:"refresh_expires_in"`
+}
+
+type logoutRequest struct {
+	RefreshToken string `json:"refresh_token"`
+	DeviceID     string `json:"device_id"`
+}
+
+func (handler authHandler) logout(w http.ResponseWriter, r *http.Request) {
+	preventCredentialCaching(w)
+	var request logoutRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	if strings.TrimSpace(request.RefreshToken) == "" || strings.TrimSpace(request.DeviceID) == "" {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "refresh_token and device_id are required")
+		return
+	}
+	if err := handler.service.Logout(r.Context(), request.RefreshToken, request.DeviceID); err != nil {
+		writeAuthError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (handler authHandler) issueToken(w http.ResponseWriter, r *http.Request) {

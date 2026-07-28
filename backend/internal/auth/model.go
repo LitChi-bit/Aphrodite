@@ -40,10 +40,10 @@ type LoginChallenge struct {
 	DevicePlatform    string
 	IdentityPublicKey []byte
 	AttemptCount      int
-	VerifiedAt   *time.Time
-	ConsumedAt   *time.Time
-	ExpiresAt    time.Time
-	CreatedAt    time.Time
+	VerifiedAt        *time.Time
+	ConsumedAt        *time.Time
+	ExpiresAt         time.Time
+	CreatedAt         time.Time
 }
 
 type AuthorizationCode struct {

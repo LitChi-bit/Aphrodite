@@ -7,9 +7,9 @@ import (
 )
 
 var (
-	ErrAccountNotFound     = errors.New("account not found")
-	ErrDeviceNotFound      = errors.New("device not found")
-	ErrChallengeNotFound   = errors.New("login challenge not found")
+	ErrAccountNotFound          = errors.New("account not found")
+	ErrDeviceNotFound           = errors.New("device not found")
+	ErrChallengeNotFound        = errors.New("login challenge not found")
 	ErrAuthorizationCodeInvalid = errors.New("authorization code invalid")
 	ErrSessionNotFound          = errors.New("session not found")
 	ErrRefreshTokenInvalid      = errors.New("refresh token invalid")
@@ -50,7 +50,9 @@ type SessionRepository interface {
 		replacement RefreshToken,
 		accessExpiresAt time.Time,
 	) (Session, RefreshToken, error)
+	FindActive(ctx context.Context, sessionID, accountID, deviceID string, now time.Time) (Session, error)
 	Revoke(ctx context.Context, sessionID string) error
+	RevokeByRefreshToken(ctx context.Context, tokenHash []byte, deviceID string, now time.Time) error
 	RevokeByDevice(ctx context.Context, accountID, deviceID string) error
 }
 
