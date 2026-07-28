@@ -11,11 +11,30 @@ type Server struct {
 	logger  *slog.Logger
 }
 
-func NewServer(logger *slog.Logger) *Server {
+type Option func(*serverOptions)
+
+type serverOptions struct {
+	authService AuthService
+}
+
+func WithAuthService(service AuthService) Option {
+	return func(options *serverOptions) {
+		options.authService = service
+	}
+}
+
+func NewServer(logger *slog.Logger, options ...Option) *Server {
+	configuration := serverOptions{}
+	for _, option := range options {
+		option(&configuration)
+	}
 	server := &Server{logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /v1/health", server.health)
+	if configuration.authService != nil {
+		authHandler{service: configuration.authService}.register(mux)
+	}
 	mux.HandleFunc("/", server.notFound)
 	server.handler = withRequestID(recoverPanic(logger, mux))
 	return server
