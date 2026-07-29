@@ -279,11 +279,12 @@ func (r *PostgresRepository) RotateRefreshToken(ctx context.Context, currentToke
 
 	replacement.SessionID = session.ID
 	replacement.ExpiresAt = minTime(replacement.ExpiresAt, session.ExpiresAt)
-	if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET replaced_by = $2, rotated_at = $3 WHERE id = $1`, current.ID, replacement.ID, now); err != nil {
-		return Session{}, RefreshToken{}, fmt.Errorf("replace refresh token: %w", err)
-	}
+	// The self-referencing foreign key requires the replacement row first.
 	if _, err := tx.Exec(ctx, `INSERT INTO refresh_tokens (`+refreshTokenColumns+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, replacement.ID, replacement.SessionID, replacement.TokenHash, replacement.ReplacedBy, replacement.RotatedAt, replacement.RevokedAt, replacement.ExpiresAt, replacement.CreatedAt); err != nil {
 		return Session{}, RefreshToken{}, fmt.Errorf("create replacement refresh token: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET replaced_by = $2, rotated_at = $3 WHERE id = $1`, current.ID, replacement.ID, now); err != nil {
+		return Session{}, RefreshToken{}, fmt.Errorf("replace refresh token: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Session{}, RefreshToken{}, fmt.Errorf("commit refresh token rotation: %w", err)
