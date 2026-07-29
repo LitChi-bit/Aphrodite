@@ -309,6 +309,17 @@ func (s *Service) AuthenticateAccessToken(ctx context.Context, verifier AccessTo
 	return claims, nil
 }
 
+func (s *Service) ListDevices(ctx context.Context, accountID string) ([]Device, error) {
+	if strings.TrimSpace(accountID) == "" {
+		return nil, ErrAccountNotFound
+	}
+	devices, err := s.devices.ListByAccount(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("list account devices: %w", err)
+	}
+	return devices, nil
+}
+
 func (s *Service) RevokeDevice(ctx context.Context, accountID, deviceID string) error {
 	device, err := s.devices.FindByID(ctx, deviceID)
 	if err != nil || subtle.ConstantTimeCompare([]byte(device.AccountID), []byte(accountID)) != 1 {

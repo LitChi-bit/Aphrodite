@@ -65,6 +65,11 @@ func main() {
 		logger.Error("create access token issuer", "error", err)
 		os.Exit(1)
 	}
+	verifier, err := auth.NewEd25519AccessTokenVerifier(privateKey.Public().(ed25519.PublicKey), nil)
+	if err != nil {
+		logger.Error("create access token verifier", "error", err)
+		os.Exit(1)
+	}
 	repository := auth.NewPostgresRepository(database)
 	service, err := auth.NewService(auth.Dependencies{
 		Accounts: repository, Devices: repository, Challenges: repository, Sessions: repository,
@@ -76,7 +81,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	api := httpapi.NewServer(logger, httpapi.WithAuthService(service))
+	api := httpapi.NewServer(
+		logger,
+		httpapi.WithAuthService(service),
+		httpapi.WithDeviceService(service, verifier),
+	)
 	server := &http.Server{
 		Addr:         cfg.Address(),
 		Handler:      api.Handler(),

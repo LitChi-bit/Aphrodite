@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"aphrodite/backend/internal/auth"
 )
 
 type Server struct {
@@ -15,6 +17,8 @@ type Option func(*serverOptions)
 
 type serverOptions struct {
 	authService      AuthService
+	deviceService    DeviceService
+	accessVerifier   auth.AccessTokenVerifier
 	challengeLimiter RateLimiter
 	tokenLimiter     RateLimiter
 }
@@ -22,6 +26,13 @@ type serverOptions struct {
 func WithAuthService(service AuthService) Option {
 	return func(options *serverOptions) {
 		options.authService = service
+	}
+}
+
+func WithDeviceService(service DeviceService, verifier auth.AccessTokenVerifier) Option {
+	return func(options *serverOptions) {
+		options.deviceService = service
+		options.accessVerifier = verifier
 	}
 }
 
@@ -56,6 +67,9 @@ func NewServer(logger *slog.Logger, options ...Option) *Server {
 			challengeLimiter: configuration.challengeLimiter,
 			tokenLimiter:     configuration.tokenLimiter,
 		}.register(mux)
+	}
+	if configuration.deviceService != nil && configuration.accessVerifier != nil {
+		deviceHandler{service: configuration.deviceService, verifier: configuration.accessVerifier}.register(mux)
 	}
 	mux.HandleFunc("/", server.notFound)
 	server.handler = withRequestID(recoverPanic(logger, mux))
