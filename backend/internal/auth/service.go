@@ -148,7 +148,7 @@ func (s *Service) VerifyPassword(ctx context.Context, input VerifyPasswordInput)
 	if err != nil {
 		return AuthorizationResult{}, ErrChallengeExpired
 	}
-	account, err := s.accounts.FindByID(ctx, challenge.AccountID)
+	account, err := s.accounts.FindAccountByID(ctx, challenge.AccountID)
 	if err != nil || account.Status != AccountStatusActive {
 		return AuthorizationResult{}, ErrInvalidCredentials
 	}
@@ -205,7 +205,7 @@ func (s *Service) ExchangeAuthorizationCode(ctx context.Context, plainCode, devi
 	if err != nil {
 		return TokenPair{}, ErrAuthorizationCodeInvalid
 	}
-	account, err := s.accounts.FindByID(ctx, code.AccountID)
+	account, err := s.accounts.FindAccountByID(ctx, code.AccountID)
 	if err != nil || account.Status != AccountStatusActive {
 		if revokeErr := s.sessions.Revoke(ctx, session.ID); revokeErr != nil {
 			return TokenPair{}, fmt.Errorf("account disabled and session revoke failed: %w", revokeErr)
@@ -249,7 +249,7 @@ func (s *Service) Refresh(ctx context.Context, plainRefresh, deviceID string) (T
 		}
 		return TokenPair{}, ErrDeviceRevoked
 	}
-	account, err := s.accounts.FindByID(ctx, session.AccountID)
+	account, err := s.accounts.FindAccountByID(ctx, session.AccountID)
 	if err != nil || account.Status != AccountStatusActive {
 		if revokeErr := s.sessions.Revoke(ctx, session.ID); revokeErr != nil {
 			return TokenPair{}, fmt.Errorf("account disabled and session revoke failed: %w", revokeErr)
@@ -302,7 +302,7 @@ func (s *Service) AuthenticateAccessToken(ctx context.Context, verifier AccessTo
 	if err != nil || device.AccountID != claims.AccountID || device.IsRevoked() {
 		return AccessTokenClaims{}, ErrAccessTokenInvalid
 	}
-	account, err := s.accounts.FindByID(ctx, claims.AccountID)
+	account, err := s.accounts.FindAccountByID(ctx, claims.AccountID)
 	if err != nil || account.Status != AccountStatusActive {
 		return AccessTokenClaims{}, ErrAccessTokenInvalid
 	}
@@ -314,7 +314,7 @@ func (s *Service) RevokeDevice(ctx context.Context, accountID, deviceID string) 
 	if err != nil || subtle.ConstantTimeCompare([]byte(device.AccountID), []byte(accountID)) != 1 {
 		return ErrDeviceNotFound
 	}
-	if err := s.devices.Revoke(ctx, accountID, deviceID); err != nil {
+	if err := s.devices.RevokeDevice(ctx, accountID, deviceID); err != nil {
 		return err
 	}
 	return s.sessions.RevokeByDevice(ctx, accountID, deviceID)

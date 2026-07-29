@@ -248,7 +248,7 @@ func (repo *memoryAccountRepository) FindByLogin(_ context.Context, login string
 	}
 	return Account{}, ErrAccountNotFound
 }
-func (repo *memoryAccountRepository) FindByID(_ context.Context, id string) (Account, error) {
+func (repo *memoryAccountRepository) FindAccountByID(_ context.Context, id string) (Account, error) {
 	if id == repo.account.ID {
 		return repo.account, nil
 	}
@@ -273,7 +273,7 @@ func (repo *memoryDeviceRepository) ListByAccount(_ context.Context, accountID s
 	}
 	return result, nil
 }
-func (repo *memoryDeviceRepository) Revoke(_ context.Context, accountID, deviceID string) error {
+func (repo *memoryDeviceRepository) RevokeDevice(_ context.Context, accountID, deviceID string) error {
 	device, ok := repo.items[deviceID]
 	if !ok || device.AccountID != accountID {
 		return ErrDeviceNotFound

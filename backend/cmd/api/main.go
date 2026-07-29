@@ -2,16 +2,35 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"aphrodite/backend/internal/auth"
 	"aphrodite/backend/internal/config"
 	"aphrodite/backend/internal/httpapi"
 )
+
+func accessTokenPrivateKey(encoded string) (ed25519.PrivateKey, error) {
+	value := strings.TrimSpace(encoded)
+	if value == "" {
+		return nil, errors.New("APHRODITE_ACCESS_TOKEN_PRIVATE_KEY is required")
+	}
+	privateKey, err := base64.StdEncoding.Strict().DecodeString(value)
+	if err != nil || len(privateKey) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("APHRODITE_ACCESS_TOKEN_PRIVATE_KEY must be base64 Ed25519 private key")
+	}
+	return ed25519.PrivateKey(privateKey), nil
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -21,7 +40,43 @@ func main() {
 		os.Exit(1)
 	}
 
-	api := httpapi.NewServer(logger)
+	if strings.TrimSpace(cfg.DatabaseURL) == "" {
+		logger.Error("invalid configuration", "error", "APHRODITE_DATABASE_URL is required")
+		os.Exit(1)
+	}
+	database, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("create database pool", "error", err)
+		os.Exit(1)
+	}
+	defer database.Close()
+	if err := database.Ping(context.Background()); err != nil {
+		logger.Error("connect database", "error", err)
+		os.Exit(1)
+	}
+
+	privateKey, err := accessTokenPrivateKey(cfg.AccessTokenPrivateKeyBase64)
+	if err != nil {
+		logger.Error("invalid access token signing key", "error", err)
+		os.Exit(1)
+	}
+	issuer, err := auth.NewEd25519AccessTokenIssuer(privateKey, nil)
+	if err != nil {
+		logger.Error("create access token issuer", "error", err)
+		os.Exit(1)
+	}
+	repository := auth.NewPostgresRepository(database)
+	service, err := auth.NewService(auth.Dependencies{
+		Accounts: repository, Devices: repository, Challenges: repository, Sessions: repository,
+		Passwords: auth.BcryptPasswordVerifier{}, Hasher: auth.SHA256TokenHasher{},
+		Credentials: auth.SecureCredentialGenerator{}, IDs: auth.RandomIDGenerator{}, AccessTokens: issuer,
+	})
+	if err != nil {
+		logger.Error("create auth service", "error", err)
+		os.Exit(1)
+	}
+
+	api := httpapi.NewServer(logger, httpapi.WithAuthService(service))
 	server := &http.Server{
 		Addr:         cfg.Address(),
 		Handler:      api.Handler(),

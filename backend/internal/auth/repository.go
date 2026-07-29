@@ -17,13 +17,13 @@ var (
 
 type AccountRepository interface {
 	FindByLogin(ctx context.Context, login string) (Account, error)
-	FindByID(ctx context.Context, accountID string) (Account, error)
+	FindAccountByID(ctx context.Context, accountID string) (Account, error)
 }
 
 type DeviceRepository interface {
 	FindByID(ctx context.Context, deviceID string) (Device, error)
 	ListByAccount(ctx context.Context, accountID string) ([]Device, error)
-	Revoke(ctx context.Context, accountID, deviceID string) error
+	RevokeDevice(ctx context.Context, accountID, deviceID string) error
 }
 
 type ChallengeRepository interface {

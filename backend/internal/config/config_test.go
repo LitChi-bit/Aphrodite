@@ -34,6 +34,8 @@ func TestLoadReadsOverrides(t *testing.T) {
 	t.Setenv("APHRODITE_HTTP_HOST", "0.0.0.0")
 	t.Setenv("APHRODITE_HTTP_PORT", "9090")
 	t.Setenv("APHRODITE_SHUTDOWN_TIMEOUT", "20s")
+	t.Setenv("APHRODITE_DATABASE_URL", "postgres://example")
+	t.Setenv("APHRODITE_ACCESS_TOKEN_PRIVATE_KEY", "example-private-key")
 
 	cfg, err := Load()
 	if err != nil {
@@ -44,6 +46,9 @@ func TestLoadReadsOverrides(t *testing.T) {
 	}
 	if cfg.ShutdownTimeout != 20*time.Second {
 		t.Fatalf("ShutdownTimeout = %v", cfg.ShutdownTimeout)
+	}
+	if cfg.DatabaseURL != "postgres://example" || cfg.AccessTokenPrivateKeyBase64 != "example-private-key" {
+		t.Fatalf("unexpected production configuration fields: %#v", cfg)
 	}
 }
 
@@ -57,6 +62,8 @@ func clearConfigEnvironment(t *testing.T) {
 		"APHRODITE_WRITE_TIMEOUT",
 		"APHRODITE_IDLE_TIMEOUT",
 		"APHRODITE_SHUTDOWN_TIMEOUT",
+		"APHRODITE_DATABASE_URL",
+		"APHRODITE_ACCESS_TOKEN_PRIVATE_KEY",
 	} {
 		t.Setenv(key, "")
 	}

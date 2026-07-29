@@ -17,13 +17,15 @@ const (
 )
 
 type Config struct {
-	Environment     string
-	HTTPHost        string
-	HTTPPort        int
-	ReadTimeout     time.Duration
-	WriteTimeout    time.Duration
-	IdleTimeout     time.Duration
-	ShutdownTimeout time.Duration
+	Environment                 string
+	HTTPHost                    string
+	HTTPPort                    int
+	ReadTimeout                 time.Duration
+	WriteTimeout                time.Duration
+	IdleTimeout                 time.Duration
+	ShutdownTimeout             time.Duration
+	DatabaseURL                 string
+	AccessTokenPrivateKeyBase64 string
 }
 
 func Load() (Config, error) {
@@ -53,13 +55,15 @@ func Load() (Config, error) {
 	}
 
 	return Config{
-		Environment:     stringFromEnv("APHRODITE_ENV", "development"),
-		HTTPHost:        stringFromEnv("APHRODITE_HTTP_HOST", defaultHost),
-		HTTPPort:        port,
-		ReadTimeout:     readTimeout,
-		WriteTimeout:    writeTimeout,
-		IdleTimeout:     idleTimeout,
-		ShutdownTimeout: shutdownTimeout,
+		Environment:                 stringFromEnv("APHRODITE_ENV", "development"),
+		HTTPHost:                    stringFromEnv("APHRODITE_HTTP_HOST", defaultHost),
+		HTTPPort:                    port,
+		ReadTimeout:                 readTimeout,
+		WriteTimeout:                writeTimeout,
+		IdleTimeout:                 idleTimeout,
+		ShutdownTimeout:             shutdownTimeout,
+		DatabaseURL:                 os.Getenv("APHRODITE_DATABASE_URL"),
+		AccessTokenPrivateKeyBase64: os.Getenv("APHRODITE_ACCESS_TOKEN_PRIVATE_KEY"),
 	}, nil
 }
 
