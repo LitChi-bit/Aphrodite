@@ -90,6 +90,12 @@ class _FakeAuthRepository implements AuthRepository {
   String? receivedLogin;
 
   @override
+  String? get accessToken => null;
+
+  @override
+  Future<String?> refreshAccessToken() async => null;
+
+  @override
   Future<void> signIn({required String login, required String password}) {
     signInCalls += 1;
     receivedLogin = login;
