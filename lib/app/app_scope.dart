@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/data/auth_api.dart';
 import '../auth/data/auth_repository.dart';
+import '../auth/data/device_api.dart';
 import '../auth/data/device_metadata.dart';
 import '../auth/data/secure_device_identity_provider.dart';
 import '../auth/data/token_store.dart';
@@ -56,6 +57,10 @@ final deviceIdentityProvider = Provider<DeviceIdentityProvider>(
 
 final authApiProvider = Provider<AuthApi>(
   (Ref ref) => AuthApi(networkClient: ref.watch(networkClientProvider)),
+);
+
+final deviceApiProvider = Provider<DeviceApi>(
+  (Ref ref) => DeviceApi(networkClient: ref.watch(networkClientProvider)),
 );
 
 final apiAuthRepositoryProvider = Provider<ApiAuthRepository>(

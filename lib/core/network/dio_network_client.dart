@@ -128,6 +128,22 @@ final class DioNetworkClient implements NetworkClient {
   }
 
   @override
+  Future<Object?> delete(
+    String path, {
+    Map<String, Object?>? queryParameters,
+  }) async {
+    try {
+      final Response<Object?> response = await _dio.delete<Object?>(
+        path,
+        queryParameters: queryParameters,
+      );
+      return response.data;
+    } on DioException catch (error) {
+      throw _mapError(error);
+    }
+  }
+
+  @override
   Future<Object?> post(
     String path, {
     Object? data,

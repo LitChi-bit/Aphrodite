@@ -144,6 +144,14 @@ class _FakeNetworkClient implements NetworkClient {
   }
 
   @override
+  Future<Object?> delete(
+    String path, {
+    Map<String, Object?>? queryParameters,
+  }) async {
+    throw UnimplementedError();
+  }
+
+  @override
   Future<Object?> post(
     String path, {
     Object? data,
