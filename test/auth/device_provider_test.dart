@@ -82,14 +82,42 @@ void main() {
     expect(await first, isTrue);
     expect(api.revokedIds, ['device-1']);
   });
+
+  test('ignores a pre-revocation device load that completes late', () async {
+    final api = _FakeDeviceApi(
+      devices: [_device('device-1'), _device('device-2')],
+    );
+    final notifier = DeviceNotifier(api: api);
+    addTearDown(notifier.dispose);
+    await notifier.load();
+
+    api.holdNextLoad();
+    final loading = notifier.load();
+    final revoke = notifier.revoke('device-2');
+    await revoke;
+    api.completeLoad();
+    await loading;
+
+    expect(notifier.state.devices.map((device) => device.id), ['device-1']);
+  });
+
+  test('does not revoke an already revoked device', () async {
+    final api = _FakeDeviceApi(devices: [_device('device-1', revoked: true)]);
+    final notifier = DeviceNotifier(api: api);
+    addTearDown(notifier.dispose);
+    await notifier.load();
+
+    expect(await notifier.revoke('device-1'), isFalse);
+    expect(api.revokedIds, isEmpty);
+  });
 }
 
-DeviceDto _device(String id) => DeviceDto(
+DeviceDto _device(String id, {bool revoked = false}) => DeviceDto(
       id: id,
       name: 'Aphrodite Android',
       platform: 'android',
       current: id == 'device-1',
-      revoked: false,
+      revoked: revoked,
       lastSeenAt: DateTime.utc(2026, 7, 31),
       createdAt: DateTime.utc(2026, 7, 1),
     );
@@ -109,10 +137,12 @@ class _FakeDeviceApi extends DeviceApi {
   final List<String> revokedIds = [];
   int listCalls = 0;
   Completer<void>? _revokeCompleter;
+  Completer<List<DeviceDto>>? _loadCompleter;
 
   @override
   Future<List<DeviceDto>> listDevices() async {
     listCalls += 1;
+    if (_loadCompleter != null) return _loadCompleter!.future;
     if (loadError != null) throw loadError!;
     return devices;
   }
@@ -128,6 +158,14 @@ class _FakeDeviceApi extends DeviceApi {
   }
 
   void completeRevoke() => _revokeCompleter?.complete();
+
+  void holdNextLoad() => _loadCompleter = Completer<List<DeviceDto>>();
+
+  void completeLoad() {
+    final completer = _loadCompleter;
+    _loadCompleter = null;
+    completer?.complete(devices);
+  }
 }
 
 class _NoopNetworkClient implements NetworkClient {

@@ -20,8 +20,25 @@ class AuthNotifier extends StateNotifier<AuthState> {
   AuthNotifier({required this.repository}) : super(const AuthState());
 
   final AuthRepository repository;
+  Future<void> _operationTail = Future<void>.value();
+  int _pendingOperations = 0;
 
-  Future<void> restoreSession() async {
+  Future<T> _runExclusively<T>(Future<T> Function() operation) {
+    final startImmediately = _pendingOperations == 0;
+    _pendingOperations += 1;
+    final future = startImmediately
+        ? Future<T>.sync(operation)
+        : _operationTail.then((_) => Future<T>.sync(operation));
+    _operationTail = future.then<void>(
+      (result) {},
+      onError: (Object error, StackTrace stackTrace) {},
+    );
+    return future.whenComplete(() => _pendingOperations -= 1);
+  }
+
+  Future<void> restoreSession() => _runExclusively(_restoreSession);
+
+  Future<void> _restoreSession() async {
     try {
       final accessToken = await repository.refreshAccessToken();
       if (!mounted || state.status != AuthStatus.restoring) return;
@@ -36,24 +53,35 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  Future<bool> signIn({required String login, required String password}) async {
-    if (login.trim().isEmpty || password.isEmpty) return false;
+  Future<bool> signIn({required String login, required String password}) {
+    if (login.trim().isEmpty || password.isEmpty) return Future.value(false);
+    return _runExclusively(
+      () => _signIn(login: login.trim(), password: password),
+    );
+  }
+
+  Future<bool> _signIn(
+      {required String login, required String password}) async {
     state = const AuthState(status: AuthStatus.authenticating);
     try {
-      await repository.signIn(login: login.trim(), password: password);
-      state = const AuthState(status: AuthStatus.signedIn);
+      await repository.signIn(login: login, password: password);
+      if (mounted) state = const AuthState(status: AuthStatus.signedIn);
       return true;
     } catch (error) {
-      state = AuthState(
-        status: AuthStatus.signedOut,
-        errorMessage: error.toString(),
-      );
+      if (mounted) {
+        state = AuthState(
+          status: AuthStatus.signedOut,
+          errorMessage: error.toString(),
+        );
+      }
       return false;
     }
   }
 
-  Future<void> signOut() async {
+  Future<void> signOut() => _runExclusively(_signOut);
+
+  Future<void> _signOut() async {
     await repository.signOut();
-    state = const AuthState(status: AuthStatus.signedOut);
+    if (mounted) state = const AuthState(status: AuthStatus.signedOut);
   }
 }

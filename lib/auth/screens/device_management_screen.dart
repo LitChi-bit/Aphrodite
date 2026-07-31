@@ -72,9 +72,13 @@ class _DeviceManagementScreenState
   }
 
   Future<void> _confirmRevoke(DeviceDto device) async {
-    if (device.current) {
+    if (device.current || device.revoked) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('当前设备不能在此处撤销，请使用退出登录。')),
+        SnackBar(
+          content: Text(
+            device.current ? '当前设备不能在此处撤销，请使用退出登录。' : '该设备已撤销。',
+          ),
+        ),
       );
       return;
     }
@@ -145,16 +149,18 @@ class _DeviceList extends StatelessWidget {
             subtitle: Text(_subtitle(device)),
             trailing: device.current
                 ? const Chip(label: Text('当前设备'))
-                : isMutating
-                    ? const SizedBox.square(
-                        dimension: 24,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : IconButton(
-                        tooltip: '撤销设备',
-                        onPressed: () => onRevoke(device),
-                        icon: const Icon(Icons.remove_circle_outline),
-                      ),
+                : device.revoked
+                    ? const Chip(label: Text('已撤销'))
+                    : isMutating
+                        ? const SizedBox.square(
+                            dimension: 24,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : IconButton(
+                            tooltip: '撤销设备',
+                            onPressed: () => onRevoke(device),
+                            icon: const Icon(Icons.remove_circle_outline),
+                          ),
           );
         },
       );

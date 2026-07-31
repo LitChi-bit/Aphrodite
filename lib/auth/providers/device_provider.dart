@@ -50,23 +50,25 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
   DeviceNotifier({required this.api}) : super(const DeviceState());
 
   final DeviceApi api;
+  int _loadGeneration = 0;
 
   Future<void> load() async {
-    if (state.isLoading) return;
+    if (state.isLoading || state.isMutating) return;
+    final generation = ++_loadGeneration;
     state = state.copyWith(
       status: DeviceListStatus.loading,
       clearError: true,
     );
     try {
       final devices = await api.listDevices();
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       state = state.copyWith(
         status: DeviceListStatus.ready,
         devices: List<DeviceDto>.unmodifiable(devices),
         clearError: true,
       );
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       state = state.copyWith(
         status: DeviceListStatus.error,
         errorMessage: error.toString(),
@@ -76,7 +78,17 @@ class DeviceNotifier extends StateNotifier<DeviceState> {
 
   Future<bool> revoke(String deviceId) async {
     final normalizedId = deviceId.trim();
-    if (normalizedId.isEmpty || state.isMutating) return false;
+    final device = state.devices
+        .where((candidate) => candidate.id == normalizedId)
+        .firstOrNull;
+    if (normalizedId.isEmpty ||
+        state.isMutating ||
+        device == null ||
+        device.revoked) {
+      return false;
+    }
+
+    ++_loadGeneration;
     state = state.copyWith(
       mutatingDeviceId: normalizedId,
       clearError: true,

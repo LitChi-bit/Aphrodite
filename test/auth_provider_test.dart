@@ -117,21 +117,44 @@ void main() {
     expect(notifier.state.status, AuthStatus.signedOut);
     expect(notifier.state.errorMessage, isNull);
   });
+
+  test('queues sign out behind an in-flight session restore', () async {
+    final repository = _FakeAuthRepository()..holdRefresh = true;
+    final notifier = AuthNotifier(repository: repository);
+    addTearDown(notifier.dispose);
+
+    final restore = notifier.restoreSession();
+    final signOut = notifier.signOut();
+    expect(repository.signOutCalls, 0);
+
+    repository.completeRefresh('restored-access-token');
+    await restore;
+    await signOut;
+
+    expect(repository.signOutCalls, 1);
+    expect(notifier.state.status, AuthStatus.signedOut);
+  });
 }
 
 class _FakeAuthRepository implements AuthRepository {
   final Completer<void> _signInCompleter = Completer<void>();
+  Completer<String?>? _refreshCompleter;
   int signInCalls = 0;
   int signOutCalls = 0;
   String? receivedLogin;
   String? restoredAccessToken;
   Object? refreshError;
+  bool holdRefresh = false;
 
   @override
   String? get accessToken => null;
 
   @override
   Future<String?> refreshAccessToken() async {
+    if (holdRefresh) {
+      _refreshCompleter = Completer<String?>();
+      return _refreshCompleter!.future;
+    }
     if (refreshError != null) throw refreshError!;
     return restoredAccessToken;
   }
@@ -149,6 +172,9 @@ class _FakeAuthRepository implements AuthRepository {
   }
 
   void completeSignIn() => _signInCompleter.complete();
+
+  void completeRefresh(String? accessToken) =>
+      _refreshCompleter?.complete(accessToken);
 
   void failSignIn(Object error) => _signInCompleter.completeError(error);
 }
