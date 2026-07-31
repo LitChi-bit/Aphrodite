@@ -1,6 +1,7 @@
 import 'package:aphrodite/auth/data/auth_api.dart';
 import 'package:aphrodite/auth/data/auth_repository.dart';
 import 'package:aphrodite/auth/data/token_store.dart';
+import 'package:aphrodite/auth/models/auth_session.dart';
 import 'package:aphrodite/core/network/network_client.dart';
 import 'package:aphrodite/core/storage/secure_store.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,12 +11,18 @@ void main() {
       () async {
     final network = _FakeNetworkClient();
     final store = _MemorySecureStore();
-    final repository = _repository(network: network, store: store);
+    final session = InMemoryAuthSession();
+    final repository = _repository(
+      network: network,
+      store: store,
+      session: session,
+    );
 
     await repository.signIn(
         login: 'example-user', password: 'example-password');
 
     expect(repository.accessToken, 'access-token-1');
+    expect(session.accessToken, 'access-token-1');
     expect(store.values, {'auth.refresh_token': 'refresh-token-1'});
     expect(network.requests.map((request) => request.path), [
       '/v1/auth/challenges',
@@ -29,12 +36,18 @@ void main() {
     final network = _FakeNetworkClient();
     final store = _MemorySecureStore()
       ..values['auth.refresh_token'] = 'refresh-token-1';
-    final repository = _repository(network: network, store: store);
+    final session = InMemoryAuthSession();
+    final repository = _repository(
+      network: network,
+      store: store,
+      session: session,
+    );
 
     final accessToken = await repository.refreshAccessToken();
 
     expect(accessToken, 'access-token-2');
     expect(repository.accessToken, 'access-token-2');
+    expect(session.accessToken, 'access-token-2');
     expect(store.values, {'auth.refresh_token': 'refresh-token-2'});
     expect(network.requests.single.data,
         containsPair('grant_type', 'refresh_token'));
@@ -44,11 +57,18 @@ void main() {
     final network = _FakeNetworkClient(failRefresh: true);
     final store = _MemorySecureStore()
       ..values['auth.refresh_token'] = 'refresh-token-1';
-    final repository = _repository(network: network, store: store);
+    final session = InMemoryAuthSession()
+      ..setAccessToken('previous-access-token');
+    final repository = _repository(
+      network: network,
+      store: store,
+      session: session,
+    );
 
     await expectLater(repository.refreshAccessToken(), throwsStateError);
 
     expect(repository.accessToken, isNull);
+    expect(session.accessToken, isNull);
     expect(store.values, isEmpty);
   });
 
@@ -57,11 +77,18 @@ void main() {
     final network = _FakeNetworkClient(failLogout: true);
     final store = _MemorySecureStore()
       ..values['auth.refresh_token'] = 'refresh-token-1';
-    final repository = _repository(network: network, store: store);
+    final session = InMemoryAuthSession()
+      ..setAccessToken('previous-access-token');
+    final repository = _repository(
+      network: network,
+      store: store,
+      session: session,
+    );
 
     await repository.signOut();
 
     expect(repository.accessToken, isNull);
+    expect(session.accessToken, isNull);
     expect(store.values, isEmpty);
   });
 }
@@ -69,11 +96,13 @@ void main() {
 ApiAuthRepository _repository({
   required _FakeNetworkClient network,
   required _MemorySecureStore store,
+  required AuthSession session,
 }) {
   return ApiAuthRepository(
     authApi: AuthApi(networkClient: network),
     deviceIdentityProvider: const _FakeDeviceIdentityProvider(),
     tokenStore: TokenStore(secureStore: store),
+    authSession: session,
   );
 }
 

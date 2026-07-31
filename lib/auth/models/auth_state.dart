@@ -1,7 +1,7 @@
-enum AuthStatus { signedOut, authenticating, signedIn }
+enum AuthStatus { restoring, signedOut, authenticating, signedIn }
 
 class AuthState {
-  const AuthState({this.status = AuthStatus.signedOut, this.errorMessage});
+  const AuthState({this.status = AuthStatus.restoring, this.errorMessage});
 
   final AuthStatus status;
   final String? errorMessage;

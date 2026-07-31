@@ -9,6 +9,7 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     try {
       await tester.pumpWidget(const ProviderScope(child: App()));
+      await tester.pump();
 
       expect(find.text('欢迎回来'), findsOneWidget);
 

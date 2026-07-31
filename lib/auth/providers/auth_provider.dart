@@ -7,14 +7,34 @@ final authRepositoryProvider = Provider<AuthRepository>(
   (ref) => const DemoAuthRepository(),
 );
 
-final authProvider = StateNotifierProvider<AuthNotifier, AuthState>(
-  (ref) => AuthNotifier(repository: ref.watch(authRepositoryProvider)),
-);
+final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
+  final notifier = AuthNotifier(repository: ref.watch(authRepositoryProvider));
+  Future<void>.microtask(() async {
+    if (!notifier.mounted) return;
+    await notifier.restoreSession();
+  });
+  return notifier;
+});
 
 class AuthNotifier extends StateNotifier<AuthState> {
   AuthNotifier({required this.repository}) : super(const AuthState());
 
   final AuthRepository repository;
+
+  Future<void> restoreSession() async {
+    try {
+      final accessToken = await repository.refreshAccessToken();
+      if (!mounted || state.status != AuthStatus.restoring) return;
+      state = AuthState(
+        status:
+            accessToken == null ? AuthStatus.signedOut : AuthStatus.signedIn,
+      );
+    } catch (_) {
+      if (mounted && state.status == AuthStatus.restoring) {
+        state = const AuthState(status: AuthStatus.signedOut);
+      }
+    }
+  }
 
   Future<bool> signIn({required String login, required String password}) async {
     if (login.trim().isEmpty || password.isEmpty) return false;
@@ -34,6 +54,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   Future<void> signOut() async {
     await repository.signOut();
-    state = const AuthState();
+    state = const AuthState(status: AuthStatus.signedOut);
   }
 }

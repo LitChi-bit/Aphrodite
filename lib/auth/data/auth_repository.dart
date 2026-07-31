@@ -1,3 +1,5 @@
+import '../../core/network/access_token_provider.dart';
+import '../models/auth_session.dart';
 import 'auth_api.dart';
 import 'token_store.dart';
 
@@ -11,22 +13,26 @@ abstract interface class AuthRepository {
   Future<void> signOut();
 }
 
-class ApiAuthRepository implements AuthRepository {
+class ApiAuthRepository implements AuthRepository, AccessTokenRefresher {
   ApiAuthRepository({
     required AuthApi authApi,
     required DeviceIdentityProvider deviceIdentityProvider,
     required TokenStore tokenStore,
+    required AuthSession authSession,
   })  : _authApi = authApi,
         _deviceIdentityProvider = deviceIdentityProvider,
-        _tokenStore = tokenStore;
+        _tokenStore = tokenStore,
+        _authSession = authSession {
+    _authSession.setRefresher(this);
+  }
 
   final AuthApi _authApi;
   final DeviceIdentityProvider _deviceIdentityProvider;
   final TokenStore _tokenStore;
-  String? _accessToken;
+  final AuthSession _authSession;
 
   @override
-  String? get accessToken => _accessToken;
+  String? get accessToken => _authSession.accessToken;
 
   @override
   Future<void> signIn({required String login, required String password}) async {
@@ -42,7 +48,7 @@ class ApiAuthRepository implements AuthRepository {
       deviceId: identity.deviceId,
     );
     await _tokenStore.writeRefreshToken(tokens.refreshToken);
-    _accessToken = tokens.accessToken;
+    _authSession.setAccessToken(tokens.accessToken);
   }
 
   @override
@@ -57,10 +63,10 @@ class ApiAuthRepository implements AuthRepository {
         deviceId: identity.deviceId,
       );
       await _tokenStore.writeRefreshToken(tokens.refreshToken);
-      _accessToken = tokens.accessToken;
-      return _accessToken;
+      _authSession.setAccessToken(tokens.accessToken);
+      return _authSession.accessToken;
     } catch (_) {
-      _accessToken = null;
+      _authSession.clear();
       await _tokenStore.clear();
       rethrow;
     }
@@ -69,7 +75,7 @@ class ApiAuthRepository implements AuthRepository {
   @override
   Future<void> signOut() async {
     final refreshToken = await _tokenStore.readRefreshToken();
-    _accessToken = null;
+    _authSession.clear();
     await _tokenStore.clear();
     if (refreshToken == null || refreshToken.isEmpty) return;
 
