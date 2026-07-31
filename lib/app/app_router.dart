@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../auth/screens/device_management_screen.dart';
 import '../auth/screens/login_screen.dart';
 import '../chat/models/conversation.dart';
 import '../chat/widgets/call_screen.dart';
@@ -11,6 +12,7 @@ abstract final class AppRouter {
   static const String home = '/';
   static const String chatRoom = '/chat';
   static const String call = '/call';
+  static const String devices = '/devices';
 
   static Route<dynamic> onGenerateRoute(RouteSettings settings) {
     return switch (settings.name) {
@@ -25,6 +27,7 @@ abstract final class AppRouter {
           CallScreen(title: settings.arguments! as String),
           fullscreenDialog: true,
         ),
+      devices => _page(settings, const DeviceManagementScreen()),
       _ => _page(settings, const _UnknownRouteScreen()),
     };
   }

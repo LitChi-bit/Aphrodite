@@ -219,6 +219,14 @@ class _AppDrawer extends StatelessWidget {
             ),
             const Divider(),
             _DrawerItem(
+              icon: Icons.devices_outlined,
+              label: '设备管理',
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).pushNamed(AppRouter.devices);
+              },
+            ),
+            _DrawerItem(
               icon: Icons.settings_outlined,
               label: '设置',
               onTap: () {
