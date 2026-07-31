@@ -16,11 +16,13 @@ type Server struct {
 type Option func(*serverOptions)
 
 type serverOptions struct {
-	authService      AuthService
-	deviceService    DeviceService
-	accessVerifier   auth.AccessTokenVerifier
-	challengeLimiter RateLimiter
-	tokenLimiter     RateLimiter
+	authService       AuthService
+	deviceService     DeviceService
+	chatService       ChatService
+	chatAuthenticator AccessTokenAuthenticator
+	accessVerifier    auth.AccessTokenVerifier
+	challengeLimiter  RateLimiter
+	tokenLimiter      RateLimiter
 }
 
 func WithAuthService(service AuthService) Option {
@@ -32,6 +34,14 @@ func WithAuthService(service AuthService) Option {
 func WithDeviceService(service DeviceService, verifier auth.AccessTokenVerifier) Option {
 	return func(options *serverOptions) {
 		options.deviceService = service
+		options.accessVerifier = verifier
+	}
+}
+
+func WithChatService(service ChatService, authenticator AccessTokenAuthenticator, verifier auth.AccessTokenVerifier) Option {
+	return func(options *serverOptions) {
+		options.chatService = service
+		options.chatAuthenticator = authenticator
 		options.accessVerifier = verifier
 	}
 }
@@ -70,6 +80,15 @@ func NewServer(logger *slog.Logger, options ...Option) *Server {
 	}
 	if configuration.deviceService != nil && configuration.accessVerifier != nil {
 		deviceHandler{service: configuration.deviceService, verifier: configuration.accessVerifier}.register(mux)
+	}
+	if configuration.chatService != nil && configuration.chatAuthenticator != nil && configuration.accessVerifier != nil {
+		chatHandler{
+			service:       configuration.chatService,
+			authenticator: configuration.chatAuthenticator,
+			verifier:      configuration.accessVerifier,
+			now:           time.Now,
+			newID:         func() (string, error) { return (auth.RandomIDGenerator{}).NewID("message") },
+		}.register(mux)
 	}
 	mux.HandleFunc("/", server.notFound)
 	server.handler = withRequestID(recoverPanic(logger, mux))

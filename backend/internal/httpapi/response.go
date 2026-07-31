@@ -33,10 +33,18 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeData(w http.ResponseWriter, r *http.Request, status int, data any) {
+	writePagedData(w, r, status, data, "")
+}
+
+func writePagedData(w http.ResponseWriter, r *http.Request, status int, data any, nextCursor string) {
+	var cursor *string
+	if nextCursor != "" {
+		cursor = &nextCursor
+	}
 	writeJSON(w, status, Envelope{
 		RequestID: RequestID(r.Context()),
 		Data:      data,
-		Meta:      Meta{},
+		Meta:      Meta{NextCursor: cursor},
 	})
 }
 

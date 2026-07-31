@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"aphrodite/backend/internal/auth"
+	"aphrodite/backend/internal/chat"
 	"aphrodite/backend/internal/config"
 	"aphrodite/backend/internal/httpapi"
 )
@@ -71,6 +72,7 @@ func main() {
 		os.Exit(1)
 	}
 	repository := auth.NewPostgresRepository(database)
+	chatRepository := chat.NewPostgresRepository(database)
 	service, err := auth.NewService(auth.Dependencies{
 		Accounts: repository, Devices: repository, Challenges: repository, Sessions: repository,
 		Passwords: auth.BcryptPasswordVerifier{}, Hasher: auth.SHA256TokenHasher{},
@@ -85,6 +87,7 @@ func main() {
 		logger,
 		httpapi.WithAuthService(service),
 		httpapi.WithDeviceService(service, verifier),
+		httpapi.WithChatService(chatRepository, service, verifier),
 	)
 	server := &http.Server{
 		Addr:         cfg.Address(),

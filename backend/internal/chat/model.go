@@ -13,6 +13,7 @@ var (
 	ErrConversationNotFound = errors.New("conversation not found")
 	ErrMembershipNotFound   = errors.New("conversation membership not found")
 	ErrMessageNotFound      = errors.New("message not found")
+	ErrMessageConflict      = errors.New("client message conflicts with existing message")
 )
 
 type ConversationKind string
@@ -45,6 +46,7 @@ type Conversation struct {
 	ID               string
 	Kind             ConversationKind
 	Name             string
+	ParticipantIDs   []string
 	EncryptionScheme string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
