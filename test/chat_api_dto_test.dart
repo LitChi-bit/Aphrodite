@@ -121,6 +121,54 @@ void main() {
       throwsA(isA<FormatException>()),
     );
   });
+
+  test('conversation DTO rejects invalid protocol field types', () async {
+    final client = _StubNetworkClient(
+      getResponse: {
+        'request_id': 'request-example',
+        'data': [
+          {
+            'id': 'conversation-example',
+            'kind': 'group',
+            'name': 'Example group',
+            'member_ids': ['account-self', 42],
+            'unread_count': -1,
+            'created_at': 'not-a-date',
+          },
+        ],
+      },
+    );
+
+    expect(
+      () => ChatApi(networkClient: client).getConversations(),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
+  test('message DTO rejects unknown kinds and malformed timestamps', () async {
+    final client = _StubNetworkClient(
+      getResponse: {
+        'request_id': 'request-example',
+        'data': [
+          {
+            'id': 'message-example',
+            'conversation_id': 'conversation-example',
+            'sender_id': 'account-other',
+            'client_message_id': 'client-message-example',
+            'kind': 'unknown',
+            'ciphertext': 'base64-example-ciphertext',
+            'created_at': 'not-a-date',
+          },
+        ],
+      },
+    );
+
+    expect(
+        () => ChatApi(networkClient: client).getMessages(
+              conversationId: 'conversation-example',
+            ),
+        throwsA(isA<FormatException>()));
+  });
 }
 
 class _StubNetworkClient implements NetworkClient {

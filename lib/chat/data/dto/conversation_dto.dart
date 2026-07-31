@@ -36,20 +36,21 @@ class ConversationDto {
   factory ConversationDto.fromJson(Map<String, Object?> json) {
     final memberIds = json['participant_ids'] ?? json['member_ids'];
     return ConversationDto(
-      id: json['id'] as String,
-      kind: json['kind'] as String,
-      title: (json['name'] ?? json['title'] ?? '') as String,
-      subtitle: json['subtitle'] as String?,
-      avatarUrl: (json['avatar_url'] ?? json['avatar']) as String?,
-      participantIds: memberIds is List<Object?>
-          ? memberIds.cast<String>()
-          : const <String>[],
-      lastMessagePreview: json['last_message_preview'] as String?,
-      lastMessageAt: _dateOrNull(json['last_message_at']),
-      unreadCount: json['unread_count'] as int? ?? 0,
-      muted: json['muted'] as bool? ?? false,
-      pinned: json['pinned'] as bool? ?? false,
-      encryptionScheme: json['encryption_scheme'] as String?,
+      id: _requiredString(json['id'], 'id'),
+      kind: _requiredKind(json['kind']),
+      title: _requiredString(json['name'] ?? json['title'], 'name'),
+      subtitle: _optionalString(json['subtitle'], 'subtitle'),
+      avatarUrl:
+          _optionalString(json['avatar_url'] ?? json['avatar'], 'avatar_url'),
+      participantIds: _stringList(memberIds, 'participant_ids'),
+      lastMessagePreview:
+          _optionalString(json['last_message_preview'], 'last_message_preview'),
+      lastMessageAt: _dateOrNull(json['last_message_at'], 'last_message_at'),
+      unreadCount: _nonNegativeInt(json['unread_count'], 'unread_count'),
+      muted: _boolOrDefault(json['muted'], 'muted'),
+      pinned: _boolOrDefault(json['pinned'], 'pinned'),
+      encryptionScheme:
+          _optionalString(json['encryption_scheme'], 'encryption_scheme'),
       createdAt: _requiredDate(json['created_at'], 'created_at'),
       updatedAt: _requiredDate(
         json['updated_at'] ?? json['created_at'],
@@ -77,11 +78,62 @@ class ConversationDto {
         updatedAt: updatedAt,
       );
 
-  static DateTime? _dateOrNull(Object? value) =>
-      value == null ? null : DateTime.parse(value as String);
+  static String _requiredString(Object? value, String field) {
+    if (value is! String || value.trim().isEmpty) {
+      throw FormatException('$field must be a non-empty string');
+    }
+    return value;
+  }
+
+  static String? _optionalString(Object? value, String field) {
+    if (value == null) return null;
+    if (value is! String) throw FormatException('$field must be a string');
+    return value;
+  }
+
+  static String _requiredKind(Object? value) {
+    final kind = _requiredString(value, 'kind');
+    if (!ConversationKind.values.any((candidate) => candidate.name == kind)) {
+      throw const FormatException('kind is invalid');
+    }
+    return kind;
+  }
+
+  static List<String> _stringList(Object? value, String field) {
+    if (value is! List<Object?>) throw FormatException('$field must be a list');
+    return List<String>.unmodifiable(
+      value.map((item) => _requiredString(item, field)),
+    );
+  }
+
+  static int _nonNegativeInt(Object? value, String field) {
+    if (value == null) return 0;
+    if (value is! int || value < 0) {
+      throw FormatException('$field must be a non-negative integer');
+    }
+    return value;
+  }
+
+  static bool _boolOrDefault(Object? value, String field) {
+    if (value == null) return false;
+    if (value is! bool) throw FormatException('$field must be a boolean');
+    return value;
+  }
+
+  static DateTime? _dateOrNull(Object? value, String field) {
+    if (value == null) return null;
+    if (value is! String) throw FormatException('$field must be a string');
+    return _date(value, field);
+  }
 
   static DateTime _requiredDate(Object? value, String field) {
     if (value is! String) throw FormatException('$field is required');
-    return DateTime.parse(value);
+    return _date(value, field);
+  }
+
+  static DateTime _date(String value, String field) {
+    final parsed = DateTime.tryParse(value);
+    if (parsed == null) throw FormatException('$field must be ISO-8601');
+    return parsed;
   }
 }
