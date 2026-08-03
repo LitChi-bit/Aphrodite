@@ -82,6 +82,21 @@ func (repository *PostgresRepository) Commit(ctx context.Context, accountID, dev
 	if err != nil {
 		return GroupState{}, fmt.Errorf("write MLS state: %w", err)
 	}
+	if len(commit.ProposalIDs) > 0 {
+		if commit.Epoch == 0 {
+			return GroupState{}, ErrProposalConflict
+		}
+		result, err := tx.Exec(ctx, `UPDATE mls_proposals
+			SET consumed_at = $3, consumed_epoch = $4
+			WHERE conversation_id = $1 AND id = ANY($2) AND base_epoch = $4 - 1 AND consumed_at IS NULL`,
+			commit.ConversationID, commit.ProposalIDs, commit.CommittedAt, commit.Epoch)
+		if err != nil {
+			return GroupState{}, fmt.Errorf("consume MLS proposals: %w", err)
+		}
+		if result.RowsAffected() != int64(len(commit.ProposalIDs)) {
+			return GroupState{}, ErrProposalConflict
+		}
+	}
 	result, err := tx.Exec(ctx, `INSERT INTO mls_device_roster (
 		conversation_id, account_id, device_id, status, added_epoch, activated_epoch, created_at, activated_at
 	) VALUES ($1,$2,$3,'active',$4,$4,$5,$5)
@@ -198,6 +213,69 @@ func (repository *PostgresRepository) ListDeviceRoster(ctx context.Context, acco
 		return nil, fmt.Errorf("read MLS device roster: %w", err)
 	}
 	return entries, nil
+}
+
+func (repository *PostgresRepository) PublishProposal(ctx context.Context, proposal Proposal) (Proposal, error) {
+	if err := proposal.Validate(); err != nil {
+		return Proposal{}, err
+	}
+	var currentEpoch int64
+	err := repository.pool.QueryRow(ctx, `SELECT state.epoch FROM mls_group_states state
+		JOIN mls_device_roster roster ON roster.conversation_id = state.conversation_id
+		WHERE state.conversation_id = $1 AND roster.account_id = $2 AND roster.device_id = $3 AND roster.status = 'active'`,
+		proposal.ConversationID, proposal.AuthorAccountID, proposal.AuthorDeviceID).Scan(&currentEpoch)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Proposal{}, ErrNotFound
+	}
+	if err != nil {
+		return Proposal{}, fmt.Errorf("read MLS proposal epoch: %w", err)
+	}
+	if proposal.BaseEpoch != currentEpoch {
+		return Proposal{}, ErrEpochConflict
+	}
+	_, err = repository.pool.Exec(ctx, `INSERT INTO mls_proposals (
+		id, conversation_id, author_account_id, author_device_id, base_epoch, proposal_data, created_at
+	) VALUES ($1,$2,$3,$4,$5,$6,$7)`, proposal.ID, proposal.ConversationID, proposal.AuthorAccountID,
+		proposal.AuthorDeviceID, proposal.BaseEpoch, proposal.Data, proposal.CreatedAt)
+	if err != nil {
+		return Proposal{}, fmt.Errorf("write MLS proposal: %w", err)
+	}
+	return proposal, nil
+}
+
+func (repository *PostgresRepository) ListProposals(ctx context.Context, accountID, deviceID, conversationID string) ([]Proposal, error) {
+	var active bool
+	if err := repository.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM mls_device_roster WHERE conversation_id = $1 AND account_id = $2 AND device_id = $3 AND status = 'active'
+	)`, conversationID, accountID, deviceID).Scan(&active); err != nil {
+		return nil, fmt.Errorf("check MLS proposal roster: %w", err)
+	}
+	if !active {
+		return nil, ErrNotFound
+	}
+	rows, err := repository.pool.Query(ctx, `SELECT proposal.id, proposal.conversation_id, proposal.author_account_id,
+		proposal.author_device_id, proposal.base_epoch, proposal.proposal_data, proposal.created_at,
+		proposal.consumed_at, proposal.consumed_epoch
+		FROM mls_proposals proposal
+		WHERE proposal.conversation_id = $1 AND proposal.consumed_at IS NULL
+		ORDER BY proposal.created_at ASC, proposal.id ASC`, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("list MLS proposals: %w", err)
+	}
+	defer rows.Close()
+	proposals := make([]Proposal, 0)
+	for rows.Next() {
+		var proposal Proposal
+		if err := rows.Scan(&proposal.ID, &proposal.ConversationID, &proposal.AuthorAccountID, &proposal.AuthorDeviceID,
+			&proposal.BaseEpoch, &proposal.Data, &proposal.CreatedAt, &proposal.ConsumedAt, &proposal.ConsumedEpoch); err != nil {
+			return nil, fmt.Errorf("scan MLS proposal: %w", err)
+		}
+		proposals = append(proposals, proposal)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read MLS proposals: %w", err)
+	}
+	return proposals, nil
 }
 
 func (repository *PostgresRepository) ClaimWelcome(ctx context.Context, accountID, deviceID string) ([]Delivery, error) {

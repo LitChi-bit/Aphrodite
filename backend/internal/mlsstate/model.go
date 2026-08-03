@@ -15,6 +15,8 @@ var (
 	ErrNotAdministrator = errors.New("MLS commit requires administrator membership")
 	ErrEpochConflict    = errors.New("MLS epoch conflict")
 	ErrRosterConflict   = errors.New("MLS device roster conflict")
+	ErrInvalidProposal  = errors.New("invalid MLS proposal")
+	ErrProposalConflict = errors.New("MLS proposal conflict")
 )
 
 // Commit and Welcome are opaque client-produced MLS bytes. The server never
@@ -28,6 +30,7 @@ type Commit struct {
 	CommittedAt       time.Time
 	Welcomes          []Welcome
 	RemovedDevices    []string
+	ProposalIDs       []string
 }
 
 type Welcome struct {
@@ -54,6 +57,18 @@ type Delivery struct {
 	CreatedAt      time.Time
 }
 
+type Proposal struct {
+	ID              string
+	ConversationID  string
+	AuthorAccountID string
+	AuthorDeviceID  string
+	BaseEpoch       int64
+	Data            []byte
+	CreatedAt       time.Time
+	ConsumedAt      *time.Time
+	ConsumedEpoch   *int64
+}
+
 type DeviceRosterEntry struct {
 	ConversationID string
 	AccountID      string
@@ -75,6 +90,19 @@ func (commit Commit) Validate() error {
 		return ErrInvalidCommit
 	}
 	seenDevices := make(map[string]struct{}, len(commit.Welcomes)+len(commit.RemovedDevices))
+	seenProposals := make(map[string]struct{}, len(commit.ProposalIDs))
+	if len(commit.ProposalIDs) > 50 {
+		return ErrInvalidCommit
+	}
+	for _, proposalID := range commit.ProposalIDs {
+		if strings.TrimSpace(proposalID) == "" {
+			return ErrInvalidCommit
+		}
+		if _, exists := seenProposals[proposalID]; exists {
+			return ErrInvalidCommit
+		}
+		seenProposals[proposalID] = struct{}{}
+	}
 	for _, welcome := range commit.Welcomes {
 		if err := welcome.Validate(); err != nil {
 			return err

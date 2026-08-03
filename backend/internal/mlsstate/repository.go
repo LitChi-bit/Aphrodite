@@ -7,4 +7,6 @@ type Repository interface {
 	GetState(ctx context.Context, accountID, deviceID, conversationID string) (GroupState, error)
 	ClaimWelcome(ctx context.Context, accountID, deviceID string) ([]Delivery, error)
 	ListDeviceRoster(ctx context.Context, accountID, conversationID string) ([]DeviceRosterEntry, error)
+	PublishProposal(ctx context.Context, proposal Proposal) (Proposal, error)
+	ListProposals(ctx context.Context, accountID, deviceID, conversationID string) ([]Proposal, error)
 }

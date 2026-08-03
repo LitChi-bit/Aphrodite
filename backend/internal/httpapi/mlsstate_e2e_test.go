@@ -116,11 +116,29 @@ func TestMLSStateAPIEndToEnd(t *testing.T) {
 		t.Fatalf("second active device state status = %d body = %s", response.Code, response.Body.String())
 	}
 
+	proposalRequest := map[string]any{"base_epoch": 1, "proposal": "cHJvcG9zYWwtZXhhbXBsZQ"}
+	response = fixture.request(t, fixture.secondTargetToken, http.MethodPost, "/v1/conversations/"+fixture.conversationID+"/mls/proposals", proposalRequest)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("proposal publish status = %d body = %s", response.Code, response.Body.String())
+	}
+	var publishedProposal struct {
+		Data proposalResponse `json:"data"`
+	}
+	decodeChatE2EResponse(t, response, &publishedProposal)
+	if publishedProposal.Data.Proposal != "cHJvcG9zYWwtZXhhbXBsZQ" || publishedProposal.Data.BaseEpoch != 1 {
+		t.Fatalf("unexpected proposal: %#v", publishedProposal.Data)
+	}
+	response = fixture.request(t, fixture.adminToken, http.MethodGet, "/v1/conversations/"+fixture.conversationID+"/mls/proposals", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proposal list status = %d body = %s", response.Code, response.Body.String())
+	}
+
 	removeFirstDevice := map[string]any{
 		"epoch":              2,
 		"group_info":         "Z3JvdXAtaW5mby1lcG9jaC0y",
 		"commit":             "Y29tbWl0LWVwb2NoLTI",
 		"removed_device_ids": []string{fixture.targetDeviceID},
+		"proposal_ids":       []string{publishedProposal.Data.ID},
 	}
 	response = fixture.request(t, fixture.adminToken, http.MethodPut, "/v1/conversations/"+fixture.conversationID+"/mls/state", removeFirstDevice)
 	if response.Code != http.StatusCreated {
@@ -131,6 +149,17 @@ func TestMLSStateAPIEndToEnd(t *testing.T) {
 	response = fixture.request(t, fixture.secondTargetToken, http.MethodGet, "/v1/conversations/"+fixture.conversationID+"/mls/state", nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("remaining device state status = %d body = %s", response.Code, response.Body.String())
+	}
+	response = fixture.request(t, fixture.adminToken, http.MethodGet, "/v1/conversations/"+fixture.conversationID+"/mls/proposals", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("consumed proposal list status = %d body = %s", response.Code, response.Body.String())
+	}
+	var consumedList struct {
+		Data []proposalResponse `json:"data"`
+	}
+	decodeChatE2EResponse(t, response, &consumedList)
+	if len(consumedList.Data) != 0 {
+		t.Fatalf("consumed proposal list returned %d items", len(consumedList.Data))
 	}
 
 	var removedRoster int

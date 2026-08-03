@@ -70,3 +70,9 @@ func (service *stubMLSStateService) ClaimWelcome(_ context.Context, accountID, d
 func (service *stubMLSStateService) ListDeviceRoster(context.Context, string, string) ([]mlsstate.DeviceRosterEntry, error) {
 	return nil, mlsstate.ErrNotFound
 }
+func (service *stubMLSStateService) PublishProposal(context.Context, mlsstate.Proposal) (mlsstate.Proposal, error) {
+	return mlsstate.Proposal{}, nil
+}
+func (service *stubMLSStateService) ListProposals(context.Context, string, string, string) ([]mlsstate.Proposal, error) {
+	return nil, nil
+}
