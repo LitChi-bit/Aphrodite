@@ -209,4 +209,13 @@ class _StubNetworkClient implements NetworkClient {
     lastPostData = data as Map<String, Object?>?;
     return postResponse;
   }
+
+  @override
+  Future<Object?> put(
+    String path, {
+    Object? data,
+    Map<String, Object?>? queryParameters,
+  }) {
+    throw UnimplementedError();
+  }
 }

@@ -10,6 +10,12 @@ abstract interface class NetworkClient {
     Map<String, Object?>? queryParameters,
   });
 
+  Future<Object?> put(
+    String path, {
+    Object? data,
+    Map<String, Object?>? queryParameters,
+  });
+
   Future<Object?> delete(
     String path, {
     Map<String, Object?>? queryParameters,

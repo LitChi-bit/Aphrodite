@@ -165,6 +165,15 @@ class _RecordingNetworkClient implements NetworkClient {
   }
 
   @override
+  Future<Object?> put(
+    String path, {
+    Object? data,
+    Map<String, Object?>? queryParameters,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
   Future<Object?> delete(
     String path, {
     Map<String, Object?>? queryParameters,

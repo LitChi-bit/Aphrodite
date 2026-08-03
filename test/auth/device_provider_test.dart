@@ -185,4 +185,12 @@ class _NoopNetworkClient implements NetworkClient {
     Map<String, Object?>? queryParameters,
   }) =>
       throw UnimplementedError();
+
+  @override
+  Future<Object?> put(
+    String path, {
+    Object? data,
+    Map<String, Object?>? queryParameters,
+  }) =>
+      throw UnimplementedError();
 }

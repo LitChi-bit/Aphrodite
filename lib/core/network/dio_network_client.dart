@@ -161,6 +161,24 @@ final class DioNetworkClient implements NetworkClient {
     }
   }
 
+  @override
+  Future<Object?> put(
+    String path, {
+    Object? data,
+    Map<String, Object?>? queryParameters,
+  }) async {
+    try {
+      final Response<Object?> response = await _dio.put<Object?>(
+        path,
+        data: data,
+        queryParameters: queryParameters,
+      );
+      return response.data;
+    } on DioException catch (error) {
+      throw _mapError(error);
+    }
+  }
+
   NetworkException _mapError(DioException error) {
     final int? statusCode = error.response?.statusCode;
     final String message = switch (error.type) {

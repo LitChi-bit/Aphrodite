@@ -184,6 +184,15 @@ class _FakeNetworkClient implements NetworkClient {
     }
     throw StateError('unexpected path $path');
   }
+
+  @override
+  Future<Object?> put(
+    String path, {
+    Object? data,
+    Map<String, Object?>? queryParameters,
+  }) {
+    throw UnimplementedError();
+  }
 }
 
 Map<String, Object?> _envelope(Map<String, Object?> data) => {

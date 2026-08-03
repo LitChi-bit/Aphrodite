@@ -127,4 +127,13 @@ class _FakeNetworkClient implements NetworkClient {
     deleteCalls += 1;
     return null;
   }
+
+  @override
+  Future<Object?> put(
+    String path, {
+    Object? data,
+    Map<String, Object?>? queryParameters,
+  }) {
+    throw UnimplementedError();
+  }
 }
