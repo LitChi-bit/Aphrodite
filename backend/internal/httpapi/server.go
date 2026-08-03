@@ -22,6 +22,8 @@ type serverOptions struct {
 	chatAuthenticator AccessTokenAuthenticator
 	keyPackageService KeyPackageService
 	keyPackageAuth    AccessTokenAuthenticator
+	mlsStateService   MLSStateService
+	mlsStateAuth      AccessTokenAuthenticator
 	accessVerifier    auth.AccessTokenVerifier
 	challengeLimiter  RateLimiter
 	tokenLimiter      RateLimiter
@@ -52,6 +54,14 @@ func WithKeyPackageService(service KeyPackageService, authenticator AccessTokenA
 	return func(options *serverOptions) {
 		options.keyPackageService = service
 		options.keyPackageAuth = authenticator
+		options.accessVerifier = verifier
+	}
+}
+
+func WithMLSStateService(service MLSStateService, authenticator AccessTokenAuthenticator, verifier auth.AccessTokenVerifier) Option {
+	return func(options *serverOptions) {
+		options.mlsStateService = service
+		options.mlsStateAuth = authenticator
 		options.accessVerifier = verifier
 	}
 }
@@ -107,6 +117,13 @@ func NewServer(logger *slog.Logger, options ...Option) *Server {
 			verifier:      configuration.accessVerifier,
 			now:           time.Now,
 			newID:         func() (string, error) { return (auth.RandomIDGenerator{}).NewID("keypackage") },
+		}.register(mux)
+	}
+	if configuration.mlsStateService != nil && configuration.mlsStateAuth != nil && configuration.accessVerifier != nil {
+		mlsStateHandler{
+			service: configuration.mlsStateService, authenticator: configuration.mlsStateAuth,
+			verifier: configuration.accessVerifier, now: time.Now,
+			newID: func() (string, error) { return (auth.RandomIDGenerator{}).NewID("welcome") },
 		}.register(mux)
 	}
 	mux.HandleFunc("/", server.notFound)

@@ -20,6 +20,7 @@ import (
 	"aphrodite/backend/internal/config"
 	"aphrodite/backend/internal/httpapi"
 	"aphrodite/backend/internal/keypackage"
+	"aphrodite/backend/internal/mlsstate"
 )
 
 func accessTokenPrivateKey(encoded string) (ed25519.PrivateKey, error) {
@@ -75,6 +76,7 @@ func main() {
 	repository := auth.NewPostgresRepository(database)
 	chatRepository := chat.NewPostgresRepository(database)
 	keyPackageRepository := keypackage.NewPostgresRepository(database)
+	mlsStateRepository := mlsstate.NewPostgresRepository(database)
 	service, err := auth.NewService(auth.Dependencies{
 		Accounts: repository, Devices: repository, Challenges: repository, Sessions: repository,
 		Passwords: auth.BcryptPasswordVerifier{}, Hasher: auth.SHA256TokenHasher{},
@@ -91,6 +93,7 @@ func main() {
 		httpapi.WithDeviceService(service, verifier),
 		httpapi.WithChatService(chatRepository, service, verifier),
 		httpapi.WithKeyPackageService(keyPackageRepository, service, verifier),
+		httpapi.WithMLSStateService(mlsStateRepository, service, verifier),
 	)
 	server := &http.Server{
 		Addr:         cfg.Address(),

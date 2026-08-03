@@ -51,6 +51,7 @@ id_rsa*
 *开发计划书*.md
 
 # ── 构建产物 ──
+backend/.tmp-*
 *.apk
 *.aab
 *.ipa
