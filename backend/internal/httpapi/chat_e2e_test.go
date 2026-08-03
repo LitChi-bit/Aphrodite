@@ -240,7 +240,7 @@ func chatE2EPool(t *testing.T) *pgxpool.Pool {
 
 func truncateChatE2ETables(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `TRUNCATE accounts CASCADE`); err != nil {
+	if _, err := pool.Exec(context.Background(), `TRUNCATE conversations, accounts CASCADE`); err != nil {
 		t.Fatalf("truncate chat E2E database: %v", err)
 	}
 }

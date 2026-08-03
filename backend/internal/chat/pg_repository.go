@@ -18,6 +18,7 @@ const conversationColumns = `c.id, c.kind, c.name,
 		WHERE member.conversation_id = c.id AND member.left_at IS NULL), ARRAY[]::text[]),
 	c.encryption_scheme, c.created_at, c.updated_at`
 const messageColumns = `m.id, m.conversation_id, m.sender_id, m.client_message_id, m.kind, m.ciphertext, m.encryption_scheme, m.encryption_group_id, m.encryption_epoch, m.encryption_header, m.reply_to_message_id, m.created_at, m.edited_at, m.deleted_at`
+const messageReturningColumns = `id, conversation_id, sender_id, client_message_id, kind, ciphertext, encryption_scheme, encryption_group_id, encryption_epoch, encryption_header, reply_to_message_id, created_at, edited_at, deleted_at`
 
 type PostgresRepository struct {
 	pool *pgxpool.Pool
@@ -71,6 +72,17 @@ func (r *PostgresRepository) ListMessages(ctx context.Context, accountID, conver
 	cursor, err := decodeCursor(page.Cursor)
 	if err != nil {
 		return nil, "", err
+	}
+
+	var memberExists bool
+	if err := r.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM conversation_members
+		WHERE conversation_id = $1 AND account_id = $2 AND left_at IS NULL
+	)`, conversationID, accountID).Scan(&memberExists); err != nil {
+		return nil, "", fmt.Errorf("check membership: %w", err)
+	}
+	if !memberExists {
+		return nil, "", ErrMembershipNotFound
 	}
 
 	rows, err := r.pool.Query(ctx, `SELECT `+messageColumns+`
@@ -139,13 +151,13 @@ func (r *PostgresRepository) CreateMessage(ctx context.Context, accountID string
 		reply_to_message_id, created_at
 	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 	ON CONFLICT (conversation_id, client_message_id) DO NOTHING
-	RETURNING `+messageColumns,
+	RETURNING `+messageReturningColumns,
 		message.ID, message.ConversationID, message.SenderID, message.ClientMessageID,
 		message.Kind, message.Ciphertext, message.Encryption.Scheme, message.Encryption.GroupID,
 		message.Encryption.Epoch, message.Encryption.Header, message.ReplyToMessageID, message.CreatedAt))
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, err := scanMessage(tx.QueryRow(ctx, `SELECT `+messageColumns+`
-			FROM messages WHERE conversation_id = $1 AND client_message_id = $2`,
+			FROM messages m WHERE conversation_id = $1 AND client_message_id = $2`,
 			message.ConversationID, message.ClientMessageID))
 		if err != nil {
 			return Message{}, false, fmt.Errorf("read idempotent message: %w", err)
