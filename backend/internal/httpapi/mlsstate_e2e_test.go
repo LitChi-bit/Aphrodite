@@ -104,6 +104,9 @@ func newMLSStateE2EFixture(t *testing.T) mlsStateE2EFixture {
 	const targetAccountID = "30000000-0000-4000-8000-000000000004"
 	const targetDeviceID = "40000000-0000-4000-8000-000000000004"
 	const targetSessionID = "50000000-0000-4000-8000-000000000004"
+	const outsiderAccountID = "30000000-0000-4000-8000-000000000003"
+	const outsiderDeviceID = "40000000-0000-4000-8000-000000000003"
+	const outsiderSessionID = "50000000-0000-4000-8000-000000000003"
 
 	now := time.Now().UTC().Truncate(time.Second)
 	if _, err := base.pool.Exec(context.Background(), `INSERT INTO accounts (id, username, email, display_name, password_hash, status, created_at, updated_at) VALUES ($1,'mls-target','mls-target@example.test','MLS target','e2e-test-password-hash','active',$2,$2)`, targetAccountID, now); err != nil {
@@ -128,11 +131,15 @@ func newMLSStateE2EFixture(t *testing.T) mlsStateE2EFixture {
 	if err != nil {
 		t.Fatalf("issue target token: %v", err)
 	}
+	outsiderToken, err := issuer.IssueAccessToken(outsiderAccountID, outsiderDeviceID, outsiderSessionID, now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("issue outsider token: %v", err)
+	}
 	repository := auth.NewPostgresRepository(base.pool)
 	service, err := auth.NewService(auth.Dependencies{Accounts: repository, Devices: repository, Challenges: repository, Sessions: repository, Passwords: auth.BcryptPasswordVerifier{}, Hasher: auth.SHA256TokenHasher{}, Credentials: auth.SecureCredentialGenerator{}, IDs: auth.RandomIDGenerator{}, AccessTokens: issuer})
 	if err != nil {
 		t.Fatalf("create MLS auth service: %v", err)
 	}
 	server := NewServer(discardLogger(), WithMLSStateService(mlsstate.NewPostgresRepository(base.pool), service, verifier))
-	return mlsStateE2EFixture{chatE2EFixture: chatE2EFixture{pool: base.pool, handler: server.Handler(), outsiderToken: base.outsiderToken}, conversationID: conversationID, targetAccountID: targetAccountID, targetDeviceID: targetDeviceID, adminToken: adminToken, targetToken: targetToken}
+	return mlsStateE2EFixture{chatE2EFixture: chatE2EFixture{pool: base.pool, handler: server.Handler(), outsiderToken: outsiderToken}, conversationID: conversationID, targetAccountID: targetAccountID, targetDeviceID: targetDeviceID, adminToken: adminToken, targetToken: targetToken}
 }
