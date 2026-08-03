@@ -56,14 +56,17 @@ type stubMLSStateService struct {
 	deliveries     []mlsstate.Delivery
 }
 
-func (service *stubMLSStateService) Commit(context.Context, string, mlsstate.Commit) (mlsstate.GroupState, error) {
+func (service *stubMLSStateService) Commit(context.Context, string, string, mlsstate.Commit) (mlsstate.GroupState, error) {
 	service.commitCalls++
 	return mlsstate.GroupState{}, nil
 }
-func (service *stubMLSStateService) GetState(context.Context, string, string) (mlsstate.GroupState, error) {
+func (service *stubMLSStateService) GetState(context.Context, string, string, string) (mlsstate.GroupState, error) {
 	return mlsstate.GroupState{}, mlsstate.ErrNotFound
 }
 func (service *stubMLSStateService) ClaimWelcome(_ context.Context, accountID, deviceID string) ([]mlsstate.Delivery, error) {
 	service.claimAccountID, service.claimDeviceID = accountID, deviceID
 	return service.deliveries, nil
+}
+func (service *stubMLSStateService) ListDeviceRoster(context.Context, string, string) ([]mlsstate.DeviceRosterEntry, error) {
+	return nil, mlsstate.ErrNotFound
 }

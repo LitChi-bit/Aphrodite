@@ -30,6 +30,14 @@ func TestMLSStateAPIEndToEnd(t *testing.T) {
 	response = fixture.request(t, fixture.targetToken, http.MethodGet, "/v1/conversations/"+fixture.conversationID+"/mls/state", nil)
 	assertChatE2EError(t, response, http.StatusNotFound, "not_found")
 
+	var pendingRoster int
+	if err := fixture.pool.QueryRow(context.Background(), `SELECT count(*) FROM mls_device_roster WHERE conversation_id = $1 AND account_id = $2 AND device_id = $3 AND status = 'pending'`, fixture.conversationID, fixture.targetAccountID, fixture.targetDeviceID).Scan(&pendingRoster); err != nil {
+		t.Fatalf("check pending MLS roster: %v", err)
+	}
+	if pendingRoster != 1 {
+		t.Fatalf("pending MLS roster entries = %d, want 1", pendingRoster)
+	}
+
 	response = fixture.request(t, fixture.targetToken, http.MethodPost, "/v1/mls/welcomes:claim", nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("welcome claim status = %d body = %s", response.Code, response.Body.String())
@@ -76,8 +84,15 @@ func TestMLSStateAPIEndToEnd(t *testing.T) {
 	if activeMembers != 1 {
 		t.Fatalf("activated members = %d, want 1", activeMembers)
 	}
+	var activeRoster int
+	if err := fixture.pool.QueryRow(context.Background(), `SELECT count(*) FROM mls_device_roster WHERE conversation_id = $1 AND account_id = $2 AND device_id = $3 AND status = 'active'`, fixture.conversationID, fixture.targetAccountID, fixture.targetDeviceID).Scan(&activeRoster); err != nil {
+		t.Fatalf("check active MLS roster: %v", err)
+	}
+	if activeRoster != 1 {
+		t.Fatalf("active MLS roster entries = %d, want 1", activeRoster)
+	}
 	var forbiddenColumns int
-	if err := fixture.pool.QueryRow(context.Background(), `SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name IN ('mls_group_states', 'mls_welcome_deliveries') AND column_name IN ('private_key', 'group_secret', 'plaintext', 'decrypted_text')`).Scan(&forbiddenColumns); err != nil {
+	if err := fixture.pool.QueryRow(context.Background(), `SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name IN ('mls_group_states', 'mls_welcome_deliveries', 'mls_device_roster') AND column_name IN ('private_key', 'group_secret', 'plaintext', 'decrypted_text')`).Scan(&forbiddenColumns); err != nil {
 		t.Fatalf("check MLS state columns: %v", err)
 	}
 	if forbiddenColumns != 0 {

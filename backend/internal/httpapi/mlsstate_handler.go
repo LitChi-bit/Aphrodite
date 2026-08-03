@@ -17,9 +17,10 @@ import (
 const maxMLSStateRequestBodyBytes = 3 << 20
 
 type MLSStateService interface {
-	Commit(context.Context, string, mlsstate.Commit) (mlsstate.GroupState, error)
-	GetState(context.Context, string, string) (mlsstate.GroupState, error)
+	Commit(context.Context, string, string, mlsstate.Commit) (mlsstate.GroupState, error)
+	GetState(context.Context, string, string, string) (mlsstate.GroupState, error)
 	ClaimWelcome(context.Context, string, string) ([]mlsstate.Delivery, error)
+	ListDeviceRoster(context.Context, string, string) ([]mlsstate.DeviceRosterEntry, error)
 }
 
 type mlsStateHandler struct {
@@ -31,10 +32,11 @@ type mlsStateHandler struct {
 }
 
 type commitMLSStateRequest struct {
-	Epoch      int64            `json:"epoch"`
-	GroupInfo  string           `json:"group_info"`
-	CommitData string           `json:"commit"`
-	Welcomes   []welcomeRequest `json:"welcomes"`
+	Epoch          int64            `json:"epoch"`
+	GroupInfo      string           `json:"group_info"`
+	CommitData     string           `json:"commit"`
+	Welcomes       []welcomeRequest `json:"welcomes"`
+	RemovedDevices []string         `json:"removed_device_ids"`
 }
 type welcomeRequest struct {
 	TargetAccountID string `json:"target_account_id"`
@@ -60,6 +62,7 @@ func (h mlsStateHandler) register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /v1/conversations/{conversation_id}/mls/state", requireAccessToken(h.authenticator, h.verifier, h.commit))
 	mux.HandleFunc("GET /v1/conversations/{conversation_id}/mls/state", requireAccessToken(h.authenticator, h.verifier, h.get))
 	mux.HandleFunc("POST /v1/mls/welcomes:claim", requireAccessToken(h.authenticator, h.verifier, h.claim))
+	mux.HandleFunc("GET /v1/conversations/{conversation_id}/mls/devices", requireAccessToken(h.authenticator, h.verifier, h.listRoster))
 	mux.HandleFunc("/v1/conversations/{conversation_id}/mls/state", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, PUT")
 		writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
@@ -105,7 +108,7 @@ func (h mlsStateHandler) commit(w http.ResponseWriter, r *http.Request) {
 		}
 		welcomes = append(welcomes, mlsstate.Welcome{ID: id, TargetAccountID: input.TargetAccountID, TargetDeviceID: input.TargetDeviceID, Data: data})
 	}
-	state, err := h.service.Commit(r.Context(), subject.AccountID, mlsstate.Commit{ConversationID: conversationID, Epoch: request.Epoch, GroupInfo: groupInfo, CommitData: commitData, CommittedAt: h.now().UTC(), Welcomes: welcomes})
+	state, err := h.service.Commit(r.Context(), subject.AccountID, subject.DeviceID, mlsstate.Commit{ConversationID: conversationID, CommittedDeviceID: subject.DeviceID, Epoch: request.Epoch, GroupInfo: groupInfo, CommitData: commitData, CommittedAt: h.now().UTC(), Welcomes: welcomes, RemovedDevices: request.RemovedDevices})
 	if err != nil {
 		h.writeError(w, r, err)
 		return
@@ -118,13 +121,26 @@ func (h mlsStateHandler) get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	state, err := h.service.GetState(r.Context(), subject.AccountID, strings.TrimSpace(r.PathValue("conversation_id")))
+	state, err := h.service.GetState(r.Context(), subject.AccountID, subject.DeviceID, strings.TrimSpace(r.PathValue("conversation_id")))
 	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
 	writeData(w, r, http.StatusOK, toGroupStateResponse(state))
 }
+func (h mlsStateHandler) listRoster(w http.ResponseWriter, r *http.Request) {
+	subject, ok := h.subject(w, r)
+	if !ok {
+		return
+	}
+	entries, err := h.service.ListDeviceRoster(r.Context(), subject.AccountID, strings.TrimSpace(r.PathValue("conversation_id")))
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeData(w, r, http.StatusOK, entries)
+}
+
 func (h mlsStateHandler) claim(w http.ResponseWriter, r *http.Request) {
 	subject, ok := h.subject(w, r)
 	if !ok {
@@ -157,6 +173,8 @@ func (h mlsStateHandler) writeError(w http.ResponseWriter, r *http.Request, err 
 		writeError(w, r, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, mlsstate.ErrEpochConflict):
 		writeError(w, r, http.StatusConflict, "epoch_conflict", "MLS epoch conflicts with current state")
+	case errors.Is(err, mlsstate.ErrRosterConflict):
+		writeError(w, r, http.StatusConflict, "roster_conflict", "MLS device roster conflicts with current state")
 	default:
 		writeError(w, r, http.StatusInternalServerError, "internal_error", "internal server error")
 	}

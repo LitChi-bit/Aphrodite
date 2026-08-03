@@ -17,7 +17,7 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 
 var _ Repository = (*PostgresRepository)(nil)
 
-func (repository *PostgresRepository) Commit(ctx context.Context, accountID string, commit Commit) (GroupState, error) {
+func (repository *PostgresRepository) Commit(ctx context.Context, accountID, deviceID string, commit Commit) (GroupState, error) {
 	if err := commit.Validate(); err != nil {
 		return GroupState{}, err
 	}
@@ -47,6 +47,18 @@ func (repository *PostgresRepository) Commit(ctx context.Context, accountID stri
 	if role != "admin" {
 		return GroupState{}, ErrNotAdministrator
 	}
+	if deviceID != commit.CommittedDeviceID {
+		return GroupState{}, ErrInvalidCommit
+	}
+	var committedDeviceActive bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM devices WHERE id = $1 AND account_id = $2 AND revoked_at IS NULL
+	)`, deviceID, accountID).Scan(&committedDeviceActive); err != nil {
+		return GroupState{}, fmt.Errorf("check committed MLS device: %w", err)
+	}
+	if !committedDeviceActive {
+		return GroupState{}, ErrInvalidCommit
+	}
 
 	var currentEpoch int64
 	err = tx.QueryRow(ctx, `SELECT epoch FROM mls_group_states WHERE conversation_id = $1 FOR UPDATE`, commit.ConversationID).Scan(&currentEpoch)
@@ -70,6 +82,36 @@ func (repository *PostgresRepository) Commit(ctx context.Context, accountID stri
 	if err != nil {
 		return GroupState{}, fmt.Errorf("write MLS state: %w", err)
 	}
+	result, err := tx.Exec(ctx, `INSERT INTO mls_device_roster (
+		conversation_id, account_id, device_id, status, added_epoch, activated_epoch, created_at, activated_at
+	) VALUES ($1,$2,$3,'active',$4,$4,$5,$5)
+	ON CONFLICT (conversation_id, device_id) DO NOTHING`,
+		commit.ConversationID, accountID, deviceID, commit.Epoch, commit.CommittedAt)
+	if err != nil {
+		return GroupState{}, fmt.Errorf("write committed MLS device roster: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		var rosterAccountID, rosterStatus string
+		if err := tx.QueryRow(ctx, `SELECT account_id, status FROM mls_device_roster
+			WHERE conversation_id = $1 AND device_id = $2 FOR UPDATE`, commit.ConversationID, deviceID).Scan(&rosterAccountID, &rosterStatus); err != nil {
+			return GroupState{}, fmt.Errorf("lock committed MLS device roster: %w", err)
+		}
+		if rosterAccountID != accountID || rosterStatus != "active" {
+			return GroupState{}, ErrRosterConflict
+		}
+	}
+	for _, deviceID := range commit.RemovedDevices {
+		result, err := tx.Exec(ctx, `UPDATE mls_device_roster
+			SET status = 'removed', removed_epoch = $3, removed_at = $4
+			WHERE conversation_id = $1 AND device_id = $2 AND status = 'active'`,
+			commit.ConversationID, deviceID, commit.Epoch, commit.CommittedAt)
+		if err != nil {
+			return GroupState{}, fmt.Errorf("remove MLS roster device: %w", err)
+		}
+		if result.RowsAffected() != 1 {
+			return GroupState{}, ErrRosterConflict
+		}
+	}
 	for _, welcome := range commit.Welcomes {
 		var targetDeviceActive bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (
@@ -80,7 +122,22 @@ func (repository *PostgresRepository) Commit(ctx context.Context, accountID stri
 		if !targetDeviceActive {
 			return GroupState{}, ErrInvalidWelcome
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO mls_welcome_deliveries (
+		result, err := tx.Exec(ctx, `INSERT INTO mls_device_roster (
+			conversation_id, account_id, device_id, status, added_epoch, created_at
+		) VALUES ($1,$2,$3,'pending',$4,$5)
+		ON CONFLICT (conversation_id, device_id) DO UPDATE
+		SET account_id = EXCLUDED.account_id, status = 'pending', added_epoch = EXCLUDED.added_epoch,
+			activated_epoch = NULL, removed_epoch = NULL, created_at = EXCLUDED.created_at,
+			activated_at = NULL, removed_at = NULL
+		WHERE mls_device_roster.status = 'removed'`,
+			commit.ConversationID, welcome.TargetAccountID, welcome.TargetDeviceID, commit.Epoch, commit.CommittedAt)
+		if err != nil {
+			return GroupState{}, fmt.Errorf("write MLS roster device: %w", err)
+		}
+		if result.RowsAffected() != 1 {
+			return GroupState{}, ErrRosterConflict
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO mls_welcome_deliveries (
 			id, conversation_id, epoch, target_account_id, target_device_id, welcome_data, created_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7)`, welcome.ID, commit.ConversationID, commit.Epoch, welcome.TargetAccountID, welcome.TargetDeviceID, welcome.Data, commit.CommittedAt)
 		if err != nil {
@@ -93,10 +150,13 @@ func (repository *PostgresRepository) Commit(ctx context.Context, accountID stri
 	return state, nil
 }
 
-func (repository *PostgresRepository) GetState(ctx context.Context, accountID, conversationID string) (GroupState, error) {
+func (repository *PostgresRepository) GetState(ctx context.Context, accountID, deviceID, conversationID string) (GroupState, error) {
 	state, err := scanState(repository.pool.QueryRow(ctx, `SELECT state.conversation_id, state.epoch, state.group_info, state.commit_data, state.committed_by, state.committed_at
-		FROM mls_group_states state JOIN conversation_members member ON member.conversation_id = state.conversation_id
-		WHERE state.conversation_id = $1 AND member.account_id = $2 AND member.left_at IS NULL`, conversationID, accountID))
+		FROM mls_group_states state
+		JOIN conversation_members member ON member.conversation_id = state.conversation_id
+		JOIN mls_device_roster roster ON roster.conversation_id = state.conversation_id
+		WHERE state.conversation_id = $1 AND member.account_id = $2 AND member.left_at IS NULL
+			AND roster.account_id = $2 AND roster.device_id = $3 AND roster.status = 'active'`, conversationID, accountID, deviceID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return GroupState{}, ErrNotFound
 	}
@@ -104,6 +164,40 @@ func (repository *PostgresRepository) GetState(ctx context.Context, accountID, c
 		return GroupState{}, fmt.Errorf("read MLS state: %w", err)
 	}
 	return state, nil
+}
+
+func (repository *PostgresRepository) ListDeviceRoster(ctx context.Context, accountID, conversationID string) ([]DeviceRosterEntry, error) {
+	var member bool
+	if err := repository.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM conversation_members WHERE conversation_id = $1 AND account_id = $2 AND left_at IS NULL
+	)`, conversationID, accountID).Scan(&member); err != nil {
+		return nil, fmt.Errorf("check MLS roster member: %w", err)
+	}
+	if !member {
+		return nil, ErrNotFound
+	}
+	rows, err := repository.pool.Query(ctx, `SELECT roster.conversation_id, roster.account_id, roster.device_id, roster.status,
+		roster.added_epoch, roster.activated_epoch, roster.removed_epoch, roster.created_at, roster.activated_at, roster.removed_at
+		FROM mls_device_roster roster
+		WHERE roster.conversation_id = $1
+		ORDER BY roster.created_at ASC, roster.device_id ASC`, conversationID)
+	if err != nil {
+		return nil, fmt.Errorf("list MLS device roster: %w", err)
+	}
+	defer rows.Close()
+	entries := make([]DeviceRosterEntry, 0)
+	for rows.Next() {
+		var entry DeviceRosterEntry
+		if err := rows.Scan(&entry.ConversationID, &entry.AccountID, &entry.DeviceID, &entry.Status,
+			&entry.AddedEpoch, &entry.ActivatedEpoch, &entry.RemovedEpoch, &entry.CreatedAt, &entry.ActivatedAt, &entry.RemovedAt); err != nil {
+			return nil, fmt.Errorf("scan MLS device roster: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read MLS device roster: %w", err)
+	}
+	return entries, nil
 }
 
 func (repository *PostgresRepository) ClaimWelcome(ctx context.Context, accountID, deviceID string) ([]Delivery, error) {
@@ -139,7 +233,17 @@ func (repository *PostgresRepository) ClaimWelcome(ctx context.Context, accountI
 		return nil, fmt.Errorf("read MLS welcomes: %w", err)
 	}
 	for _, delivery := range deliveries {
-		_, err := tx.Exec(ctx, `INSERT INTO conversation_members (conversation_id, account_id, role, joined_at)
+		result, err := tx.Exec(ctx, `UPDATE mls_device_roster
+			SET status = 'active', activated_epoch = $4, activated_at = now()
+			WHERE conversation_id = $1 AND account_id = $2 AND device_id = $3 AND status = 'pending'`,
+			delivery.ConversationID, accountID, deviceID, delivery.Epoch)
+		if err != nil {
+			return nil, fmt.Errorf("activate MLS roster device: %w", err)
+		}
+		if result.RowsAffected() != 1 {
+			return nil, ErrRosterConflict
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO conversation_members (conversation_id, account_id, role, joined_at)
 			VALUES ($1,$2,'member',now()) ON CONFLICT (conversation_id, account_id) DO UPDATE SET left_at = NULL`, delivery.ConversationID, accountID)
 		if err != nil {
 			return nil, fmt.Errorf("activate MLS member: %w", err)

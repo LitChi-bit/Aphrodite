@@ -14,17 +14,20 @@ var (
 	ErrNotFound         = errors.New("MLS state not found")
 	ErrNotAdministrator = errors.New("MLS commit requires administrator membership")
 	ErrEpochConflict    = errors.New("MLS epoch conflict")
+	ErrRosterConflict   = errors.New("MLS device roster conflict")
 )
 
 // Commit and Welcome are opaque client-produced MLS bytes. The server never
 // parses them or stores an MLS private key, group secret, or message plaintext.
 type Commit struct {
-	ConversationID string
-	Epoch          int64
-	GroupInfo      []byte
-	CommitData     []byte
-	CommittedAt    time.Time
-	Welcomes       []Welcome
+	ConversationID    string
+	CommittedDeviceID string
+	Epoch             int64
+	GroupInfo         []byte
+	CommitData        []byte
+	CommittedAt       time.Time
+	Welcomes          []Welcome
+	RemovedDevices    []string
 }
 
 type Welcome struct {
@@ -51,14 +54,27 @@ type Delivery struct {
 	CreatedAt      time.Time
 }
 
+type DeviceRosterEntry struct {
+	ConversationID string
+	AccountID      string
+	DeviceID       string
+	Status         string
+	AddedEpoch     int64
+	ActivatedEpoch *int64
+	RemovedEpoch   *int64
+	CreatedAt      time.Time
+	ActivatedAt    *time.Time
+	RemovedAt      *time.Time
+}
+
 func (commit Commit) Validate() error {
-	if strings.TrimSpace(commit.ConversationID) == "" || commit.Epoch < 0 ||
+	if strings.TrimSpace(commit.ConversationID) == "" || strings.TrimSpace(commit.CommittedDeviceID) == "" || commit.Epoch < 0 ||
 		len(commit.GroupInfo) == 0 || len(commit.GroupInfo) > maxMaterialBytes ||
 		len(commit.CommitData) == 0 || len(commit.CommitData) > maxMaterialBytes ||
 		commit.CommittedAt.IsZero() || len(commit.Welcomes) > 20 {
 		return ErrInvalidCommit
 	}
-	seenDevices := make(map[string]struct{}, len(commit.Welcomes))
+	seenDevices := make(map[string]struct{}, len(commit.Welcomes)+len(commit.RemovedDevices))
 	for _, welcome := range commit.Welcomes {
 		if err := welcome.Validate(); err != nil {
 			return err
@@ -67,6 +83,15 @@ func (commit Commit) Validate() error {
 			return ErrInvalidCommit
 		}
 		seenDevices[welcome.TargetDeviceID] = struct{}{}
+	}
+	for _, deviceID := range commit.RemovedDevices {
+		if strings.TrimSpace(deviceID) == "" {
+			return ErrInvalidCommit
+		}
+		if _, exists := seenDevices[deviceID]; exists {
+			return ErrInvalidCommit
+		}
+		seenDevices[deviceID] = struct{}{}
 	}
 	return nil
 }
