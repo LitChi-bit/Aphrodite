@@ -11,6 +11,7 @@ import (
 
 const columns = `id, account_id, device_id, ciphersuite, key_package, signature, created_at, expires_at, consumed_at`
 const packageColumns = `package.id, package.account_id, package.device_id, package.ciphersuite, package.key_package, package.signature, package.created_at, package.expires_at, package.consumed_at`
+const packageReturningColumns = `package.id, package.account_id, package.device_id, package.ciphersuite, package.key_package, package.signature, package.created_at, package.expires_at, package.consumed_at`
 
 type PostgresRepository struct {
 	pool *pgxpool.Pool
@@ -100,7 +101,7 @@ func (repository *PostgresRepository) Claim(ctx context.Context, accountID strin
 		SET consumed_at = $2
 		FROM candidates
 		WHERE package.id = candidates.id
-		RETURNING `+columns+`
+		RETURNING `+packageReturningColumns+`
 	)
 	SELECT `+columns+` FROM claimed
 	ORDER BY expires_at ASC, created_at ASC, id ASC`, accountID, now, limit)
