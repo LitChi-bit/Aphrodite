@@ -9,6 +9,7 @@ build/
 .pub-cache/
 .pub/
 *.g.dart
+!lib/chat/data/drift_chat_database.g.dart
 *.gr.dart
 *.freezed.dart
 
