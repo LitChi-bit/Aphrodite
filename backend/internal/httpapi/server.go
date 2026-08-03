@@ -20,6 +20,8 @@ type serverOptions struct {
 	deviceService     DeviceService
 	chatService       ChatService
 	chatAuthenticator AccessTokenAuthenticator
+	keyPackageService KeyPackageService
+	keyPackageAuth    AccessTokenAuthenticator
 	accessVerifier    auth.AccessTokenVerifier
 	challengeLimiter  RateLimiter
 	tokenLimiter      RateLimiter
@@ -42,6 +44,14 @@ func WithChatService(service ChatService, authenticator AccessTokenAuthenticator
 	return func(options *serverOptions) {
 		options.chatService = service
 		options.chatAuthenticator = authenticator
+		options.accessVerifier = verifier
+	}
+}
+
+func WithKeyPackageService(service KeyPackageService, authenticator AccessTokenAuthenticator, verifier auth.AccessTokenVerifier) Option {
+	return func(options *serverOptions) {
+		options.keyPackageService = service
+		options.keyPackageAuth = authenticator
 		options.accessVerifier = verifier
 	}
 }
@@ -88,6 +98,15 @@ func NewServer(logger *slog.Logger, options ...Option) *Server {
 			verifier:      configuration.accessVerifier,
 			now:           time.Now,
 			newID:         func() (string, error) { return (auth.RandomIDGenerator{}).NewID("message") },
+		}.register(mux)
+	}
+	if configuration.keyPackageService != nil && configuration.keyPackageAuth != nil && configuration.accessVerifier != nil {
+		keyPackageHandler{
+			service:       configuration.keyPackageService,
+			authenticator: configuration.keyPackageAuth,
+			verifier:      configuration.accessVerifier,
+			now:           time.Now,
+			newID:         func() (string, error) { return (auth.RandomIDGenerator{}).NewID("keypackage") },
 		}.register(mux)
 	}
 	mux.HandleFunc("/", server.notFound)
