@@ -91,6 +91,55 @@ func TestMLSStateAPIEndToEnd(t *testing.T) {
 	if activeRoster != 1 {
 		t.Fatalf("active MLS roster entries = %d, want 1", activeRoster)
 	}
+	addSecondDevice := map[string]any{
+		"epoch":      1,
+		"group_info": "Z3JvdXAtaW5mby1lcG9jaC0x",
+		"commit":     "Y29tbWl0LWVwb2NoLTE",
+		"welcomes": []map[string]any{{
+			"target_account_id": fixture.targetAccountID,
+			"target_device_id":  fixture.secondTargetDeviceID,
+			"welcome":           "c2Vjb25kLWRldmljZS13ZWxjb21l",
+		}},
+	}
+	response = fixture.request(t, fixture.adminToken, http.MethodPut, "/v1/conversations/"+fixture.conversationID+"/mls/state", addSecondDevice)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("second device commit status = %d body = %s", response.Code, response.Body.String())
+	}
+	response = fixture.request(t, fixture.secondTargetToken, http.MethodGet, "/v1/conversations/"+fixture.conversationID+"/mls/state", nil)
+	assertChatE2EError(t, response, http.StatusNotFound, "not_found")
+	response = fixture.request(t, fixture.secondTargetToken, http.MethodPost, "/v1/mls/welcomes:claim", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("second device welcome claim status = %d body = %s", response.Code, response.Body.String())
+	}
+	response = fixture.request(t, fixture.secondTargetToken, http.MethodGet, "/v1/conversations/"+fixture.conversationID+"/mls/state", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("second active device state status = %d body = %s", response.Code, response.Body.String())
+	}
+
+	removeFirstDevice := map[string]any{
+		"epoch":              2,
+		"group_info":         "Z3JvdXAtaW5mby1lcG9jaC0y",
+		"commit":             "Y29tbWl0LWVwb2NoLTI",
+		"removed_device_ids": []string{fixture.targetDeviceID},
+	}
+	response = fixture.request(t, fixture.adminToken, http.MethodPut, "/v1/conversations/"+fixture.conversationID+"/mls/state", removeFirstDevice)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("remove device commit status = %d body = %s", response.Code, response.Body.String())
+	}
+	response = fixture.request(t, fixture.targetToken, http.MethodGet, "/v1/conversations/"+fixture.conversationID+"/mls/state", nil)
+	assertChatE2EError(t, response, http.StatusNotFound, "not_found")
+	response = fixture.request(t, fixture.secondTargetToken, http.MethodGet, "/v1/conversations/"+fixture.conversationID+"/mls/state", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("remaining device state status = %d body = %s", response.Code, response.Body.String())
+	}
+
+	var removedRoster int
+	if err := fixture.pool.QueryRow(context.Background(), `SELECT count(*) FROM mls_device_roster WHERE conversation_id = $1 AND device_id = $2 AND status = 'removed'`, fixture.conversationID, fixture.targetDeviceID).Scan(&removedRoster); err != nil {
+		t.Fatalf("check removed MLS roster: %v", err)
+	}
+	if removedRoster != 1 {
+		t.Fatalf("removed MLS roster entries = %d, want 1", removedRoster)
+	}
 	var forbiddenColumns int
 	if err := fixture.pool.QueryRow(context.Background(), `SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name IN ('mls_group_states', 'mls_welcome_deliveries', 'mls_device_roster') AND column_name IN ('private_key', 'group_secret', 'plaintext', 'decrypted_text')`).Scan(&forbiddenColumns); err != nil {
 		t.Fatalf("check MLS state columns: %v", err)
@@ -102,11 +151,13 @@ func TestMLSStateAPIEndToEnd(t *testing.T) {
 
 type mlsStateE2EFixture struct {
 	chatE2EFixture
-	conversationID  string
-	targetAccountID string
-	targetDeviceID  string
-	adminToken      string
-	targetToken     string
+	conversationID       string
+	targetAccountID      string
+	targetDeviceID       string
+	secondTargetDeviceID string
+	adminToken           string
+	targetToken          string
+	secondTargetToken    string
 }
 
 func newMLSStateE2EFixture(t *testing.T) mlsStateE2EFixture {
@@ -119,6 +170,8 @@ func newMLSStateE2EFixture(t *testing.T) mlsStateE2EFixture {
 	const targetAccountID = "30000000-0000-4000-8000-000000000004"
 	const targetDeviceID = "40000000-0000-4000-8000-000000000004"
 	const targetSessionID = "50000000-0000-4000-8000-000000000004"
+	const secondTargetDeviceID = "40000000-0000-4000-8000-000000000005"
+	const secondTargetSessionID = "50000000-0000-4000-8000-000000000005"
 	const outsiderAccountID = "30000000-0000-4000-8000-000000000003"
 	const outsiderDeviceID = "40000000-0000-4000-8000-000000000003"
 	const outsiderSessionID = "50000000-0000-4000-8000-000000000003"
@@ -133,6 +186,12 @@ func newMLSStateE2EFixture(t *testing.T) mlsStateE2EFixture {
 	if _, err := base.pool.Exec(context.Background(), `INSERT INTO auth_sessions (id, account_id, device_id, expires_at, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$5)`, targetSessionID, targetAccountID, targetDeviceID, now.Add(time.Hour), now); err != nil {
 		t.Fatalf("insert MLS target session: %v", err)
 	}
+	if _, err := base.pool.Exec(context.Background(), `INSERT INTO devices (id, account_id, name, platform, identity_public_key, created_at, updated_at) VALUES ($1,$2,'MLS target second device','android',$3,$4,$4)`, secondTargetDeviceID, targetAccountID, []byte("mls-e2e-second-public-key"), now); err != nil {
+		t.Fatalf("insert MLS target second device: %v", err)
+	}
+	if _, err := base.pool.Exec(context.Background(), `INSERT INTO auth_sessions (id, account_id, device_id, expires_at, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$5)`, secondTargetSessionID, targetAccountID, secondTargetDeviceID, now.Add(time.Hour), now); err != nil {
+		t.Fatalf("insert MLS target second session: %v", err)
+	}
 	if _, err := base.pool.Exec(context.Background(), `UPDATE conversation_members SET role = 'admin' WHERE conversation_id = $1 AND account_id = $2`, conversationID, adminAccountID); err != nil {
 		t.Fatalf("promote MLS admin: %v", err)
 	}
@@ -146,6 +205,10 @@ func newMLSStateE2EFixture(t *testing.T) mlsStateE2EFixture {
 	if err != nil {
 		t.Fatalf("issue target token: %v", err)
 	}
+	secondTargetToken, err := issuer.IssueAccessToken(targetAccountID, secondTargetDeviceID, secondTargetSessionID, now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("issue second target token: %v", err)
+	}
 	outsiderToken, err := issuer.IssueAccessToken(outsiderAccountID, outsiderDeviceID, outsiderSessionID, now.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("issue outsider token: %v", err)
@@ -156,5 +219,5 @@ func newMLSStateE2EFixture(t *testing.T) mlsStateE2EFixture {
 		t.Fatalf("create MLS auth service: %v", err)
 	}
 	server := NewServer(discardLogger(), WithMLSStateService(mlsstate.NewPostgresRepository(base.pool), service, verifier))
-	return mlsStateE2EFixture{chatE2EFixture: chatE2EFixture{pool: base.pool, handler: server.Handler(), outsiderToken: outsiderToken}, conversationID: conversationID, targetAccountID: targetAccountID, targetDeviceID: targetDeviceID, adminToken: adminToken, targetToken: targetToken}
+	return mlsStateE2EFixture{chatE2EFixture: chatE2EFixture{pool: base.pool, handler: server.Handler(), outsiderToken: outsiderToken}, conversationID: conversationID, targetAccountID: targetAccountID, targetDeviceID: targetDeviceID, secondTargetDeviceID: secondTargetDeviceID, adminToken: adminToken, targetToken: targetToken, secondTargetToken: secondTargetToken}
 }
