@@ -93,8 +93,8 @@ func (repository *PostgresRepository) Claim(ctx context.Context, accountID strin
 		WHERE package.account_id = $1 AND package.consumed_at IS NULL AND package.expires_at > $2
 		AND device.revoked_at IS NULL
 		ORDER BY package.expires_at ASC, package.created_at ASC, package.id ASC
-		FOR UPDATE OF package SKIP LOCKED
 		LIMIT $3
+		FOR UPDATE OF package SKIP LOCKED
 	), claimed AS (
 		UPDATE mls_key_packages package
 		SET consumed_at = $2
