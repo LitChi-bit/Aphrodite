@@ -67,6 +67,8 @@ type Proposal struct {
 	CreatedAt       time.Time
 	ConsumedAt      *time.Time
 	ConsumedEpoch   *int64
+	ExpiredAt       *time.Time
+	ExpiredEpoch    *int64
 }
 
 type DeviceRosterEntry struct {

@@ -1,8 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,6 +166,54 @@ func TestMLSStateAPIEndToEnd(t *testing.T) {
 		t.Fatalf("consumed proposal list returned %d items", len(consumedList.Data))
 	}
 
+	concurrentProposalRequest := map[string]any{"base_epoch": 2, "proposal": "Y29uY3VycmVudC1wcm9wb3NhbA"}
+	response = fixture.request(t, fixture.secondTargetToken, http.MethodPost, "/v1/conversations/"+fixture.conversationID+"/mls/proposals", concurrentProposalRequest)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("concurrent proposal publish status = %d body = %s", response.Code, response.Body.String())
+	}
+	var concurrentProposal struct {
+		Data proposalResponse `json:"data"`
+	}
+	decodeChatE2EResponse(t, response, &concurrentProposal)
+	staleProposalRequest := map[string]any{"base_epoch": 2, "proposal": "c3RhbGUtcHJvcG9zYWw"}
+	response = fixture.request(t, fixture.secondTargetToken, http.MethodPost, "/v1/conversations/"+fixture.conversationID+"/mls/proposals", staleProposalRequest)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("stale proposal publish status = %d body = %s", response.Code, response.Body.String())
+	}
+	var staleProposal struct {
+		Data proposalResponse `json:"data"`
+	}
+	decodeChatE2EResponse(t, response, &staleProposal)
+
+	concurrentCommit := map[string]any{
+		"epoch":        3,
+		"group_info":   "Z3JvdXAtaW5mby1lcG9jaC0z",
+		"commit":       "Y29tbWl0LWVwb2NoLTM",
+		"proposal_ids": []string{concurrentProposal.Data.ID},
+	}
+	statuses := fixture.concurrentRequests(t, fixture.adminToken, http.MethodPut, "/v1/conversations/"+fixture.conversationID+"/mls/state", concurrentCommit, 2)
+	created, conflicted := 0, 0
+	for _, status := range statuses {
+		switch status {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			conflicted++
+		default:
+			t.Fatalf("unexpected concurrent commit statuses: %v", statuses)
+		}
+	}
+	if created != 1 || conflicted != 1 {
+		t.Fatalf("concurrent commit statuses = %v, want one 201 and one 409", statuses)
+	}
+	var expiredProposal int
+	if err := fixture.pool.QueryRow(context.Background(), `SELECT count(*) FROM mls_proposals WHERE id = $1 AND expired_at IS NOT NULL AND expired_epoch = 3`, staleProposal.Data.ID).Scan(&expiredProposal); err != nil {
+		t.Fatalf("check expired MLS proposal: %v", err)
+	}
+	if expiredProposal != 1 {
+		t.Fatalf("expired MLS proposals = %d, want 1", expiredProposal)
+	}
+
 	var removedRoster int
 	if err := fixture.pool.QueryRow(context.Background(), `SELECT count(*) FROM mls_device_roster WHERE conversation_id = $1 AND device_id = $2 AND status = 'removed'`, fixture.conversationID, fixture.targetDeviceID).Scan(&removedRoster); err != nil {
 		t.Fatalf("check removed MLS roster: %v", err)
@@ -187,6 +239,33 @@ type mlsStateE2EFixture struct {
 	adminToken           string
 	targetToken          string
 	secondTargetToken    string
+}
+
+func (fixture mlsStateE2EFixture) concurrentRequests(t *testing.T, token, method, path string, body any, count int) []int {
+	t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal concurrent request: %v", err)
+	}
+	statuses := make([]int, count)
+	var wait sync.WaitGroup
+	start := make(chan struct{})
+	for index := 0; index < count; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			<-start
+			request := httptest.NewRequest(method, path, bytes.NewReader(encoded))
+			request.Header.Set("Authorization", "Bearer "+token)
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			fixture.handler.ServeHTTP(response, request)
+			statuses[index] = response.Code
+		}(index)
+	}
+	close(start)
+	wait.Wait()
+	return statuses
 }
 
 func newMLSStateE2EFixture(t *testing.T) mlsStateE2EFixture {

@@ -88,7 +88,8 @@ func (repository *PostgresRepository) Commit(ctx context.Context, accountID, dev
 		}
 		result, err := tx.Exec(ctx, `UPDATE mls_proposals
 			SET consumed_at = $3, consumed_epoch = $4
-			WHERE conversation_id = $1 AND id = ANY($2) AND base_epoch = $4 - 1 AND consumed_at IS NULL`,
+			WHERE conversation_id = $1 AND id = ANY($2) AND base_epoch = $4 - 1
+				AND consumed_at IS NULL AND expired_at IS NULL`,
 			commit.ConversationID, commit.ProposalIDs, commit.CommittedAt, commit.Epoch)
 		if err != nil {
 			return GroupState{}, fmt.Errorf("consume MLS proposals: %w", err)
@@ -96,6 +97,12 @@ func (repository *PostgresRepository) Commit(ctx context.Context, accountID, dev
 		if result.RowsAffected() != int64(len(commit.ProposalIDs)) {
 			return GroupState{}, ErrProposalConflict
 		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE mls_proposals
+		SET expired_at = $2, expired_epoch = $3
+		WHERE conversation_id = $1 AND base_epoch < $3 AND consumed_at IS NULL AND expired_at IS NULL`,
+		commit.ConversationID, commit.CommittedAt, commit.Epoch); err != nil {
+		return GroupState{}, fmt.Errorf("expire MLS proposals: %w", err)
 	}
 	result, err := tx.Exec(ctx, `INSERT INTO mls_device_roster (
 		conversation_id, account_id, device_id, status, added_epoch, activated_epoch, created_at, activated_at
@@ -255,9 +262,10 @@ func (repository *PostgresRepository) ListProposals(ctx context.Context, account
 	}
 	rows, err := repository.pool.Query(ctx, `SELECT proposal.id, proposal.conversation_id, proposal.author_account_id,
 		proposal.author_device_id, proposal.base_epoch, proposal.proposal_data, proposal.created_at,
-		proposal.consumed_at, proposal.consumed_epoch
-		FROM mls_proposals proposal
-		WHERE proposal.conversation_id = $1 AND proposal.consumed_at IS NULL
+		proposal.consumed_at, proposal.consumed_epoch, proposal.expired_at, proposal.expired_epoch
+		FROM mls_proposals proposal JOIN mls_group_states state ON state.conversation_id = proposal.conversation_id
+		WHERE proposal.conversation_id = $1 AND proposal.base_epoch = state.epoch
+			AND proposal.consumed_at IS NULL AND proposal.expired_at IS NULL
 		ORDER BY proposal.created_at ASC, proposal.id ASC`, conversationID)
 	if err != nil {
 		return nil, fmt.Errorf("list MLS proposals: %w", err)
@@ -267,7 +275,8 @@ func (repository *PostgresRepository) ListProposals(ctx context.Context, account
 	for rows.Next() {
 		var proposal Proposal
 		if err := rows.Scan(&proposal.ID, &proposal.ConversationID, &proposal.AuthorAccountID, &proposal.AuthorDeviceID,
-			&proposal.BaseEpoch, &proposal.Data, &proposal.CreatedAt, &proposal.ConsumedAt, &proposal.ConsumedEpoch); err != nil {
+			&proposal.BaseEpoch, &proposal.Data, &proposal.CreatedAt, &proposal.ConsumedAt, &proposal.ConsumedEpoch,
+			&proposal.ExpiredAt, &proposal.ExpiredEpoch); err != nil {
 			return nil, fmt.Errorf("scan MLS proposal: %w", err)
 		}
 		proposals = append(proposals, proposal)
