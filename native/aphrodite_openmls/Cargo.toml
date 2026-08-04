@@ -1,0 +1,22 @@
+[package]
+name = "aphrodite_openmls"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+publish = false
+license = "AGPL-3.0-or-later"
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+openmls = { version = "0.8.1", default-features = false, features = ["openmls_rust_crypto", "sqlite-provider"] }
+openmls_basic_credential = "0.5.0"
+openmls_rust_crypto = "0.5.1"
+openmls_sqlite_storage = "0.2.0"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+tls_codec = "0.5"
+
+[dev-dependencies]
+tempfile = "3.23"
