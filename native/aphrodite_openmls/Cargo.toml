@@ -14,7 +14,10 @@ openmls = { version = "0.8.1", default-features = false, features = ["openmls_ru
 openmls_basic_credential = "0.5.0"
 openmls_rust_crypto = "0.5.1"
 openmls_sqlite_storage = "0.2.0"
+openmls_traits = "0.5.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thiserror = "2.0"
 tls_codec = "0.5"
 
