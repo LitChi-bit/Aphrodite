@@ -277,6 +277,13 @@ impl NativeMlsEngine {
         }
     }
 
+    pub fn remove_local_group(&self, conversation_id: impl AsRef<str>) -> Result<(), OpenMlsError> {
+        let _operation = self.operation_lock.lock().map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let group_id = group_id_from_conversation_id(conversation_id)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?.ok_or(OpenMlsError::GroupNotFound)?;
+        group.delete(self.provider.storage()).map_err(|error| OpenMlsError::GroupDeletion(error.to_string()))
+    }
+
     pub fn generate_key_packages(
         &self,
         count: usize,
@@ -634,6 +641,8 @@ pub enum OpenMlsError {
     ApplicationMessageProcessing(String),
     #[error("expected an MLS application message")]
     ExpectedApplicationMessage,
+    #[error("failed to delete local MLS group: {0}")]
+    GroupDeletion(String),
     #[error("failed to create OpenMLS KeyPackage: {0}")]
     KeyPackageCreation(KeyPackageNewError),
     #[error("failed to serialize public OpenMLS protocol material: {0}")]
@@ -1033,6 +1042,18 @@ mod tests {
             .decrypt_application_message(conversation_id, &response)
             .expect("creator decrypts");
         assert_eq!(response_plaintext, b"hello from joiner");
+    }
+
+    #[test]
+    fn removes_local_group_state_and_rejects_follow_up_operations() {
+        let support_dir = TempDir::new().expect("temporary support directory");
+        let state_path = PrivateStatePath::from_app_support_dir(support_dir.path()).expect("state path");
+        let engine = NativeMlsEngine::open(&state_path).expect("engine opens");
+        engine.initialize_device("device-delete").expect("identity initializes");
+        engine.create_group("conversation-delete").expect("group creates");
+        engine.remove_local_group("conversation-delete").expect("group deletes");
+        assert!(matches!(engine.encrypt_application_message("conversation-delete", b"payload"), Err(OpenMlsError::GroupNotFound)));
+        assert!(matches!(engine.remove_local_group("conversation-delete"), Err(OpenMlsError::GroupNotFound)));
     }
 
     #[test]

@@ -318,6 +318,25 @@ pub unsafe extern "C" fn aphrodite_openmls_decrypt_application_message(
     })
 }
 
+/// Removes one local MLS group and all persisted group secrets.
+///
+/// # Safety
+/// `handle` must be live and `conversation_id` must be a valid UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_remove_local_group(
+    handle: *mut AphroditeOpenMlsHandle,
+    conversation_id: *const c_char,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else { return response_buffer(error_response::<()>("invalid_handle", "handle is null")); };
+        let Some(conversation_id) = read_c_string(conversation_id) else { return response_buffer(error_response::<()>("invalid_argument", "conversation_id must be valid UTF-8")); };
+        match engine.remove_local_group(conversation_id) {
+            Ok(()) => response_buffer(success_response(())),
+            Err(error) => response_buffer(error_response::<()>(error_code(&error), &error.to_string())),
+        }
+    })
+}
+
 /// Closes an engine handle. Passing null is a no-op.
 ///
 /// # Safety
@@ -422,6 +441,7 @@ fn error_code(error: &OpenMlsError) -> &'static str {
         OpenMlsError::EmptyConversationId => "empty_conversation_id",
         OpenMlsError::GroupAlreadyExists => "group_already_exists",
         OpenMlsError::GroupNotFound => "group_not_found",
+        OpenMlsError::GroupDeletion(_) => "group_deletion_failed",
         OpenMlsError::GroupPersistenceMissing => "group_persistence_missing",
         OpenMlsError::EmptyApplicationMessage => "empty_application_message",
         OpenMlsError::DeviceNotInitialized => "device_not_initialized",
