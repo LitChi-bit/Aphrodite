@@ -35,13 +35,17 @@ void main() {
       keyPackage: <int>[9, 10],
     );
     final joined = await session.joinGroup(welcome: welcome.welcome);
-    final ciphertext = await session.encryptApplicationMessage(
+    final encrypted = await session.encryptApplicationMessage(
+      conversationId: 'conversation-1',
+      plaintext: <int>[98, 105, 110, 97, 114, 121, 0],
+    );
+    final payload = await session.encryptMessage(
       conversationId: 'conversation-1',
       plaintext: <int>[98, 105, 110, 97, 114, 121, 0],
     );
     final plaintext = await session.decryptApplicationMessage(
       conversationId: 'conversation-1',
-      ciphertext: ciphertext,
+      ciphertext: encrypted.ciphertext,
     );
     final handshake = await session.applyHandshakeMessage(
       conversationId: 'conversation-1',
@@ -51,12 +55,21 @@ void main() {
       conversationId: 'conversation-1',
     );
 
-    expect(groupId, <int>[1, 2]);
+    expect(groupId, 'conversation-1'.codeUnits);
     expect(welcome.commit, <int>[3, 4]);
     expect(welcome.welcome, <int>[5, 6]);
     expect(welcome.groupInfo, isNull);
-    expect(joined, <int>[1, 2]);
-    expect(ciphertext, <int>[7, 8]);
+    expect(joined, 'conversation-1'.codeUnits);
+    expect(encrypted.ciphertext, <int>[7, 8]);
+    expect(encrypted.scheme, nativeOpenMlsCiphersuite);
+    expect(encrypted.groupId, 'conversation-1'.codeUnits);
+    expect(encrypted.epoch, 3);
+    expect(encrypted.header, isEmpty);
+    expect(payload.ciphertext, <int>[7, 8]);
+    expect(payload.scheme, nativeOpenMlsCiphersuite);
+    expect(payload.groupId, 'conversation-1');
+    expect(payload.epoch, 3);
+    expect(payload.header, isEmpty);
     expect(plaintext, <int>[98, 105, 110, 97, 114, 121, 0]);
     expect(handshake.kind, 'proposal_stored');
     expect(handshake.epoch, 1);
@@ -66,7 +79,7 @@ void main() {
     expect(commit.epoch, 2);
     await session.removeLocalGroup(conversationId: 'conversation-1');
     await session.destroyDeviceState();
-    expect(native.releasedBuffers, 11);
+    expect(native.releasedBuffers, 12);
 
     await session.close();
     expect(native.closed, isTrue);
@@ -153,7 +166,9 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
       _jsonBuffer(<String, dynamic>{
         'abi_version': 1,
         'ok': true,
-        'data': <String, dynamic>{'group_id': '0102'},
+        'data': <String, dynamic>{
+          'group_id': '636f6e766572736174696f6e2d31',
+        },
         'error': null,
       });
 
@@ -182,7 +197,9 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
       _jsonBuffer(<String, dynamic>{
         'abi_version': 1,
         'ok': true,
-        'data': <String, dynamic>{'group_id': '0102'},
+        'data': <String, dynamic>{
+          'group_id': '636f6e766572736174696f6e2d31',
+        },
         'error': null,
       });
 
@@ -195,7 +212,13 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
       _jsonBuffer(<String, dynamic>{
         'abi_version': 1,
         'ok': true,
-        'data': <String, dynamic>{'ciphertext': '0708'},
+        'data': <String, dynamic>{
+          'ciphertext': '0708',
+          'scheme': nativeOpenMlsCiphersuite,
+          'group_id': '636f6e766572736174696f6e2d31',
+          'epoch': 3,
+          'header': '',
+        },
         'error': null,
       });
 

@@ -53,7 +53,13 @@ void main() {
             'sender_id': 'account-other',
             'client_message_id': 'client-message-example',
             'kind': 'text',
-            'ciphertext': 'base64-example-ciphertext',
+            'ciphertext': 'AQID',
+            'encryption': {
+              'scheme': 'mls_v1',
+              'group_id': 'group-example',
+              'epoch': 7,
+              'header': 'BAU',
+            },
             'reply_to': null,
             'created_at': '2026-07-27T06:00:00Z',
             'edited_at': null,
@@ -71,6 +77,11 @@ void main() {
 
     expect(message.text, isNull);
     expect(message.encryptionState, MessageEncryptionState.encrypted);
+    final dto = page.items.single;
+    expect(dto.toEncryptedPayload().ciphertext, <int>[1, 2, 3]);
+    expect(dto.toEncryptedPayload().groupId, 'group-example');
+    expect(dto.toEncryptedPayload().epoch, 7);
+    expect(dto.toEncryptedPayload().header, <int>[4, 5]);
     expect(message.status, ChatMessageStatus.sent);
     expect(client.lastPath, '/v1/conversations/conversation-example/messages');
     expect(client.lastQuery?['direction'], 'backward');
@@ -87,7 +98,13 @@ void main() {
           'sender_id': 'account-self',
           'client_message_id': 'client-message-example',
           'kind': 'text',
-          'ciphertext': 'base64-example-ciphertext',
+          'ciphertext': 'AQID',
+          'encryption': {
+            'scheme': 'mls_v1',
+            'group_id': 'group-example',
+            'epoch': 7,
+            'header': 'BAU',
+          },
           'decrypted_text': 'Example message',
           'reply_to': null,
           'created_at': '2026-07-27T06:00:00Z',
@@ -145,6 +162,58 @@ void main() {
     );
   });
 
+  test('message DTO rejects missing or padded encryption metadata', () async {
+    final missingMetadata = _StubNetworkClient(
+      getResponse: {
+        'request_id': 'request-example',
+        'data': [
+          {
+            'id': 'message-example',
+            'conversation_id': 'conversation-example',
+            'sender_id': 'account-other',
+            'client_message_id': 'client-message-example',
+            'kind': 'text',
+            'ciphertext': 'AQID',
+            'created_at': '2026-07-27T06:00:00Z',
+          },
+        ],
+      },
+    );
+    final paddedHeader = _StubNetworkClient(
+      getResponse: {
+        'request_id': 'request-example',
+        'data': [
+          {
+            'id': 'message-example',
+            'conversation_id': 'conversation-example',
+            'sender_id': 'account-other',
+            'client_message_id': 'client-message-example',
+            'kind': 'text',
+            'ciphertext': 'AQID',
+            'encryption': {
+              'scheme': 'mls_v1',
+              'group_id': 'group-example',
+              'epoch': 7,
+              'header': 'BAU=',
+            },
+            'created_at': '2026-07-27T06:00:00Z',
+          },
+        ],
+      },
+    );
+
+    expect(
+      () => ChatApi(networkClient: missingMetadata)
+          .getMessages(conversationId: 'conversation-example'),
+      throwsA(isA<FormatException>()),
+    );
+    expect(
+      () => ChatApi(networkClient: paddedHeader)
+          .getMessages(conversationId: 'conversation-example'),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
   test('message DTO rejects unknown kinds and malformed timestamps', () async {
     final client = _StubNetworkClient(
       getResponse: {
@@ -156,7 +225,13 @@ void main() {
             'sender_id': 'account-other',
             'client_message_id': 'client-message-example',
             'kind': 'unknown',
-            'ciphertext': 'base64-example-ciphertext',
+            'ciphertext': 'AQID',
+            'encryption': {
+              'scheme': 'mls_v1',
+              'group_id': 'group-example',
+              'epoch': 7,
+              'header': 'BAU',
+            },
             'created_at': 'not-a-date',
           },
         ],

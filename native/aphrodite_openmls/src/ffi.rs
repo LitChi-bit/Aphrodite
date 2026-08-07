@@ -7,8 +7,8 @@ use std::{
 use serde::Serialize;
 
 use crate::{
-    NativeMlsEngine, OpenMlsCommitBundle, OpenMlsError, OpenMlsHandshakeResult, OpenMlsKeyPackage,
-    PrivateStatePath,
+    NativeMlsEngine, OpenMlsApplicationMessage, OpenMlsCommitBundle, OpenMlsError,
+    OpenMlsHandshakeResult, OpenMlsKeyPackage, PrivateStatePath, MLS_CIPHERSUITE_NAME,
 };
 
 const ABI_VERSION: u32 = 1;
@@ -63,6 +63,10 @@ struct GroupResponse {
 #[derive(Debug, Serialize)]
 struct ApplicationMessageResponse {
     ciphertext: String,
+    scheme: &'static str,
+    group_id: String,
+    epoch: u64,
+    header: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -257,9 +261,7 @@ pub unsafe extern "C" fn aphrodite_openmls_encrypt_application_message(
         };
 
         match engine.encrypt_application_message(conversation_id, plaintext) {
-            Ok(ciphertext) => response_buffer(success_response(ApplicationMessageResponse {
-                ciphertext: encode_bytes(&ciphertext),
-            })),
+            Ok(message) => response_buffer(success_response(application_message_response(message))),
             Err(error) => {
                 response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
             }
@@ -592,6 +594,16 @@ fn commit_response(bundle: OpenMlsCommitBundle) -> CommitResponse {
         welcome: bundle.welcome().map(encode_bytes),
         group_info: bundle.group_info().map(encode_bytes),
         epoch: bundle.epoch(),
+    }
+}
+
+fn application_message_response(message: OpenMlsApplicationMessage) -> ApplicationMessageResponse {
+    ApplicationMessageResponse {
+        ciphertext: encode_bytes(message.ciphertext()),
+        scheme: MLS_CIPHERSUITE_NAME,
+        group_id: encode_bytes(message.group_id()),
+        epoch: message.epoch(),
+        header: encode_bytes(message.header()),
     }
 }
 

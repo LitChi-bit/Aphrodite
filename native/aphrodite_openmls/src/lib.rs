@@ -15,6 +15,9 @@ use openmls::prelude::{
     KeyPackageIn, KeyPackageNewError, Lifetime, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig,
     MlsMessageBodyIn, MlsMessageIn, OpenMlsProvider, ProcessedMessageContent,
 };
+
+pub const MLS_CIPHERSUITE_NAME: &str =
+    "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519";
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
@@ -101,6 +104,36 @@ impl OpenMlsCommitBundle {
     }
     pub fn epoch(&self) -> u64 {
         self.epoch
+    }
+}
+
+/// Public metadata accompanying a serialized MLS application message.
+///
+/// The header is the MLS authenticated data (AAD). It is intentionally public
+/// and currently empty because Aphrodite does not add application AAD yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenMlsApplicationMessage {
+    ciphertext: Vec<u8>,
+    group_id: Vec<u8>,
+    epoch: u64,
+    header: Vec<u8>,
+}
+
+impl OpenMlsApplicationMessage {
+    pub fn ciphertext(&self) -> &[u8] {
+        &self.ciphertext
+    }
+
+    pub fn group_id(&self) -> &[u8] {
+        &self.group_id
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn header(&self) -> &[u8] {
+        &self.header
     }
 }
 
@@ -247,7 +280,7 @@ impl NativeMlsEngine {
         &self,
         conversation_id: impl AsRef<str>,
         plaintext: &[u8],
-    ) -> Result<Vec<u8>, OpenMlsError> {
+    ) -> Result<OpenMlsApplicationMessage, OpenMlsError> {
         let _operation = self
             .operation_lock
             .lock()
@@ -260,11 +293,27 @@ impl NativeMlsEngine {
             .ok_or(OpenMlsError::GroupNotFound)?;
         let identity = self.require_device_identity()?;
         let signer = self.provider.read_device_signer(&identity)?;
-        group
+        let message = group
             .create_message(&self.provider, &signer, plaintext)
-            .map_err(|error| OpenMlsError::ApplicationMessageCreation(error.to_string()))?
+            .map_err(|error| OpenMlsError::ApplicationMessageCreation(error.to_string()))?;
+        let serialized = message
             .tls_serialize_detached()
-            .map_err(OpenMlsError::TlsSerialization)
+            .map_err(OpenMlsError::TlsSerialization)?;
+        let mut remaining = serialized.as_slice();
+        let parsed = MlsMessageIn::tls_deserialize(&mut remaining)
+            .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
+        if !remaining.is_empty() {
+            return Err(OpenMlsError::TrailingProtocolMaterial);
+        }
+        let protocol_message = parsed
+            .try_into_protocol_message()
+            .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
+        Ok(OpenMlsApplicationMessage {
+            ciphertext: serialized,
+            group_id: protocol_message.group_id().to_vec(),
+            epoch: protocol_message.epoch().as_u64(),
+            header: Vec::new(),
+        })
     }
 
     pub fn add_member(
@@ -1200,11 +1249,14 @@ mod tests {
         let ciphertext = reopened
             .encrypt_application_message(conversation_id, b"test payload")
             .expect("persisted group encrypts after reopen");
-        let mut serialized = ciphertext.as_slice();
+        let mut serialized = ciphertext.ciphertext().as_ref();
         let _parsed = openmls::prelude::MlsMessageIn::tls_deserialize(&mut serialized)
             .expect("ciphertext is valid TLS material");
 
         assert_eq!(group_id, conversation_id.as_bytes());
+        assert_eq!(ciphertext.group_id(), conversation_id.as_bytes());
+        assert_eq!(ciphertext.epoch(), 0);
+        assert!(ciphertext.header().is_empty());
         assert!(serialized.is_empty());
     }
 

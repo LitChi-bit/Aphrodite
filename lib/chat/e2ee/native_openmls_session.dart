@@ -2,15 +2,18 @@ import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 
+import 'e2ee_client.dart';
 import 'openmls_client.dart';
 import 'openmls_ffi_bindings.dart';
+
+const nativeOpenMlsCiphersuite = 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519';
 
 /// Minimal Dart adapter for the currently exported native OpenMLS ABI.
 ///
 /// Group and message operations remain unavailable until their native ABI
 /// functions are implemented. This class deliberately does not implement
 /// [OpenMlsClient] to avoid presenting a partial MLS implementation as complete.
-final class NativeOpenMlsSession {
+final class NativeOpenMlsSession implements E2eeClient {
   NativeOpenMlsSession({
     required NativeOpenMlsApi bindings,
     required String appSupportDir,
@@ -116,7 +119,7 @@ final class NativeOpenMlsSession {
         return _decodeHex(_requireString(data, 'group_id'));
       });
 
-  Future<List<int>> encryptApplicationMessage({
+  Future<NativeOpenMlsApplicationMessage> encryptApplicationMessage({
     required String conversationId,
     required List<int> plaintext,
   }) =>
@@ -129,8 +132,59 @@ final class NativeOpenMlsSession {
           ),
         );
         final data = _requireData(response, 'encrypt_application_message');
-        return _decodeHex(_requireString(data, 'ciphertext'));
+        return NativeOpenMlsApplicationMessage(
+          ciphertext: _decodeHex(_requireString(data, 'ciphertext')),
+          scheme: _requireString(data, 'scheme'),
+          groupId: _decodeHex(_requireString(data, 'group_id')),
+          epoch: _requireInt(data, 'epoch'),
+          header: _decodeHex(_requireString(data, 'header')),
+        );
       });
+
+  @override
+  Future<EncryptedPayload> encryptMessage({
+    required String conversationId,
+    required List<int> plaintext,
+  }) async {
+    final message = await encryptApplicationMessage(
+      conversationId: conversationId,
+      plaintext: plaintext,
+    );
+    if (message.scheme != nativeOpenMlsCiphersuite) {
+      throw const NativeOpenMlsException('native MLS ciphersuite is invalid');
+    }
+    final expectedGroupId = conversationId.trim().codeUnits;
+    if (!_sameBytes(message.groupId, expectedGroupId)) {
+      throw const NativeOpenMlsException(
+          'native MLS group ID does not match conversation');
+    }
+    return EncryptedPayload(
+      ciphertext: message.ciphertext,
+      scheme: message.scheme,
+      groupId: conversationId.trim(),
+      epoch: message.epoch,
+      header: message.header,
+    );
+  }
+
+  @override
+  Future<List<int>> decryptMessage({
+    required String conversationId,
+    required EncryptedPayload payload,
+  }) {
+    if (payload.scheme != nativeOpenMlsCiphersuite) {
+      throw const NativeOpenMlsException(
+          'encrypted payload scheme is unsupported');
+    }
+    if (payload.groupId != conversationId.trim()) {
+      throw const NativeOpenMlsException(
+          'encrypted payload group ID is invalid');
+    }
+    return decryptApplicationMessage(
+      conversationId: conversationId,
+      ciphertext: payload.ciphertext,
+    );
+  }
 
   Future<List<int>> decryptApplicationMessage({
     required String conversationId,
@@ -274,6 +328,24 @@ final class NativeOpenMlsSession {
   }
 }
 
+class NativeOpenMlsApplicationMessage {
+  NativeOpenMlsApplicationMessage({
+    required List<int> ciphertext,
+    required this.scheme,
+    required List<int> groupId,
+    required this.epoch,
+    required List<int> header,
+  })  : ciphertext = List.unmodifiable(ciphertext),
+        groupId = List.unmodifiable(groupId),
+        header = List.unmodifiable(header);
+
+  final List<int> ciphertext;
+  final String scheme;
+  final List<int> groupId;
+  final int epoch;
+  final List<int> header;
+}
+
 class NativeOpenMlsHandshakeResult {
   const NativeOpenMlsHandshakeResult({
     required this.kind,
@@ -353,6 +425,14 @@ int _requireInt(Map<String, dynamic> data, String field) {
     return value;
   }
   throw NativeOpenMlsException('native response field $field is invalid');
+}
+
+bool _sameBytes(List<int> first, List<int> second) {
+  if (first.length != second.length) return false;
+  for (var index = 0; index < first.length; index++) {
+    if (first[index] != second[index]) return false;
+  }
+  return true;
 }
 
 List<int> _decodeHex(String value) {

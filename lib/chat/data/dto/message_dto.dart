@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import '../../e2ee/e2ee_client.dart';
 import '../../models/message.dart';
 
 class MessageDto {
@@ -8,6 +11,7 @@ class MessageDto {
     required this.clientMessageId,
     required this.kind,
     required this.ciphertext,
+    required this.encryption,
     required this.createdAt,
     this.replyToMessageId,
     this.editedAt,
@@ -21,6 +25,7 @@ class MessageDto {
   final String clientMessageId;
   final String kind;
   final String ciphertext;
+  final EncryptedPayload encryption;
   final String? decryptedText;
   final String? replyToMessageId;
   final DateTime createdAt;
@@ -36,6 +41,10 @@ class MessageDto {
             _requiredString(json['client_message_id'], 'client_message_id'),
         kind: _requiredKind(json['kind']),
         ciphertext: _requiredString(json['ciphertext'], 'ciphertext'),
+        encryption: _requiredEncryption(
+          json['encryption'],
+          _requiredString(json['ciphertext'], 'ciphertext'),
+        ),
         decryptedText:
             _optionalString(json['decrypted_text'], 'decrypted_text'),
         replyToMessageId: _optionalString(json['reply_to'], 'reply_to'),
@@ -74,6 +83,51 @@ class MessageDto {
     if (value == null) return null;
     if (value is! String) throw FormatException('$field must be a string');
     return value;
+  }
+
+  EncryptedPayload toEncryptedPayload() => encryption;
+
+  static EncryptedPayload _requiredEncryption(
+    Object? value,
+    String ciphertext,
+  ) {
+    if (value is! Map) {
+      throw const FormatException('encryption must be an object');
+    }
+    final scheme = _requiredString(value['scheme'], 'encryption.scheme');
+    final groupId = _requiredString(value['group_id'], 'encryption.group_id');
+    final epoch = value['epoch'];
+    if (epoch is! int || epoch < 0) {
+      throw const FormatException(
+          'encryption.epoch must be a non-negative integer');
+    }
+    return EncryptedPayload(
+      ciphertext: _decodeBase64UrlNoPadding(ciphertext, 'ciphertext'),
+      scheme: scheme,
+      groupId: groupId,
+      epoch: epoch,
+      header: _decodeBase64UrlNoPadding(
+        _requiredString(value['header'], 'encryption.header'),
+        'encryption.header',
+      ),
+    );
+  }
+
+  static List<int> _decodeBase64UrlNoPadding(String value, String field) {
+    if (value.contains('=') || !RegExp(r'^[A-Za-z0-9_-]*$').hasMatch(value)) {
+      throw FormatException('$field must be unpadded base64url');
+    }
+    final remainder = value.length % 4;
+    if (remainder == 1) {
+      throw FormatException('$field must be valid base64url');
+    }
+    final normalized =
+        remainder == 0 ? value : '$value${'=' * (4 - remainder)}';
+    try {
+      return base64Url.decode(normalized);
+    } on FormatException {
+      throw FormatException('$field must be valid base64url');
+    }
   }
 
   static String _requiredKind(Object? value) {
