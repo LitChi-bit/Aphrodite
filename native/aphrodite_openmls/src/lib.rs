@@ -10,8 +10,9 @@ use std::{
 };
 
 use openmls::prelude::{
-    tls_codec::Serialize as TlsSerialize, BasicCredential, Ciphersuite, CredentialWithKey,
-    KeyPackage, KeyPackageBundle, KeyPackageNewError, Lifetime, OpenMlsProvider,
+    tls_codec::Serialize as TlsSerialize, BasicCredential, Ciphersuite, CredentialWithKey, GroupId,
+    KeyPackage, KeyPackageBundle, KeyPackageNewError, Lifetime, MlsGroup, MlsGroupCreateConfig,
+    OpenMlsProvider,
 };
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::RustCrypto;
@@ -140,6 +141,64 @@ impl NativeMlsEngine {
         Ok(identity)
     }
 
+    /// Creates and persists a new one-member MLS group for a conversation.
+    ///
+    /// The conversation ID is an application-assigned opaque identifier. It is
+    /// never derived from user-visible names and must be globally unique.
+    pub fn create_group(&self, conversation_id: impl AsRef<str>) -> Result<Vec<u8>, OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let group_id = group_id_from_conversation_id(conversation_id)?;
+        if MlsGroup::load(self.provider.storage(), &group_id)?.is_some() {
+            return Err(OpenMlsError::GroupAlreadyExists);
+        }
+
+        let identity = self.require_device_identity()?;
+        let signer = self.provider.read_device_signer(&identity)?;
+        let group = MlsGroup::new_with_group_id(
+            &self.provider,
+            &signer,
+            &MlsGroupCreateConfig::default(),
+            group_id.clone(),
+            identity.credential_with_key(),
+        )
+        .map_err(|error| OpenMlsError::GroupCreation(error.to_string()))?;
+        let persisted = MlsGroup::load(self.provider.storage(), &group_id)?
+            .ok_or(OpenMlsError::GroupPersistenceMissing)?;
+        debug_assert_eq!(persisted.group_id().as_slice(), group.group_id().as_slice());
+        Ok(group_id.to_vec())
+    }
+
+    /// Encrypts an MLS application message using a persisted active group.
+    ///
+    /// The returned bytes are a public TLS-serialized MLS message. Private
+    /// sender-ratchet state remains owned by the native storage provider.
+    pub fn encrypt_application_message(
+        &self,
+        conversation_id: impl AsRef<str>,
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        if plaintext.is_empty() {
+            return Err(OpenMlsError::EmptyApplicationMessage);
+        }
+        let group_id = group_id_from_conversation_id(conversation_id)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?
+            .ok_or(OpenMlsError::GroupNotFound)?;
+        let identity = self.require_device_identity()?;
+        let signer = self.provider.read_device_signer(&identity)?;
+        group
+            .create_message(&self.provider, &signer, plaintext)
+            .map_err(|error| OpenMlsError::ApplicationMessageCreation(error.to_string()))?
+            .tls_serialize_detached()
+            .map_err(OpenMlsError::TlsSerialization)
+    }
+
     pub fn generate_key_packages(
         &self,
         count: usize,
@@ -161,12 +220,7 @@ impl NativeMlsEngine {
             return Err(OpenMlsError::KeyPackageLifetimeTooLong);
         }
 
-        let identity = self
-            .device_identity
-            .read()
-            .map_err(|_| OpenMlsError::IdentityLockPoisoned)?
-            .clone()
-            .ok_or(OpenMlsError::DeviceNotInitialized)?;
+        let identity = self.require_device_identity()?;
         let signer = self.provider.read_device_signer(&identity)?;
         let credential_with_key = identity.credential_with_key();
         let lifetime = Lifetime::init(now.saturating_sub(60 * 60), expires_at);
@@ -196,6 +250,14 @@ impl NativeMlsEngine {
         }
 
         Ok(packages)
+    }
+
+    fn require_device_identity(&self) -> Result<OpenMlsDeviceIdentity, OpenMlsError> {
+        self.device_identity
+            .read()
+            .map_err(|_| OpenMlsError::IdentityLockPoisoned)?
+            .clone()
+            .ok_or(OpenMlsError::DeviceNotInitialized)
     }
 }
 
@@ -342,6 +404,16 @@ impl NativeMlsProvider {
     }
 }
 
+fn group_id_from_conversation_id(
+    conversation_id: impl AsRef<str>,
+) -> Result<GroupId, OpenMlsError> {
+    let conversation_id = conversation_id.as_ref().trim();
+    if conversation_id.is_empty() {
+        return Err(OpenMlsError::EmptyConversationId);
+    }
+    Ok(GroupId::from_slice(conversation_id.as_bytes()))
+}
+
 fn unix_timestamp() -> Result<u64, OpenMlsError> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -432,6 +504,16 @@ impl OpaqueMlsBytes {
 pub enum OpenMlsError {
     #[error("MLS protocol material must not be empty")]
     EmptyProtocolMaterial,
+    #[error("conversation ID must not be empty")]
+    EmptyConversationId,
+    #[error("the MLS group already exists for this conversation")]
+    GroupAlreadyExists,
+    #[error("the MLS group was not found for this conversation")]
+    GroupNotFound,
+    #[error("new MLS group state was not persisted")]
+    GroupPersistenceMissing,
+    #[error("application message plaintext must not be empty")]
+    EmptyApplicationMessage,
     #[error("the native MLS state directory must be absolute")]
     RelativeStateDirectory,
     #[error("device ID must not be empty")]
@@ -454,6 +536,10 @@ pub enum OpenMlsError {
     IdentityLockPoisoned,
     #[error("native OpenMLS operation lock was poisoned")]
     OperationLockPoisoned,
+    #[error("failed to create MLS group: {0}")]
+    GroupCreation(String),
+    #[error("failed to create MLS application message: {0}")]
+    ApplicationMessageCreation(String),
     #[error("failed to create OpenMLS KeyPackage: {0}")]
     KeyPackageCreation(KeyPackageNewError),
     #[error("failed to serialize public OpenMLS protocol material: {0}")]
@@ -710,6 +796,73 @@ mod tests {
             })
             .expect("stored key packages are queryable");
         assert_eq!(stored, 3);
+    }
+
+    #[test]
+    fn creates_persists_and_restores_a_group_for_one_conversation() {
+        let support_dir = TempDir::new().expect("temporary support directory");
+        let state_path = PrivateStatePath::from_app_support_dir(support_dir.path())
+            .expect("temporary directory is absolute");
+        let conversation_id = "conversation-group-persistence";
+
+        let group_id = {
+            let engine = NativeMlsEngine::open(&state_path).expect("engine opens");
+            engine
+                .initialize_device("device-alpha")
+                .expect("identity initializes");
+            engine
+                .create_group(conversation_id)
+                .expect("group is created and persisted")
+        };
+
+        let reopened = NativeMlsEngine::open(&state_path).expect("engine reopens");
+        reopened
+            .initialize_device("device-alpha")
+            .expect("identity restores");
+        let ciphertext = reopened
+            .encrypt_application_message(conversation_id, b"test payload")
+            .expect("persisted group encrypts after reopen");
+        let mut serialized = ciphertext.as_slice();
+        let _parsed = openmls::prelude::MlsMessageIn::tls_deserialize(&mut serialized)
+            .expect("ciphertext is valid TLS material");
+
+        assert_eq!(group_id, conversation_id.as_bytes());
+        assert!(serialized.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_group_creation_and_application_message_requests() {
+        let support_dir = TempDir::new().expect("temporary support directory");
+        let state_path = PrivateStatePath::from_app_support_dir(support_dir.path())
+            .expect("temporary directory is absolute");
+        let engine = NativeMlsEngine::open(&state_path).expect("engine opens");
+
+        assert!(matches!(
+            engine.create_group("conversation-alpha"),
+            Err(OpenMlsError::DeviceNotInitialized)
+        ));
+        engine
+            .initialize_device("device-alpha")
+            .expect("identity initializes");
+        assert!(matches!(
+            engine.create_group("  "),
+            Err(OpenMlsError::EmptyConversationId)
+        ));
+        engine
+            .create_group("conversation-alpha")
+            .expect("group creates");
+        assert!(matches!(
+            engine.create_group("conversation-alpha"),
+            Err(OpenMlsError::GroupAlreadyExists)
+        ));
+        assert!(matches!(
+            engine.encrypt_application_message("conversation-missing", b"payload"),
+            Err(OpenMlsError::GroupNotFound)
+        ));
+        assert!(matches!(
+            engine.encrypt_application_message("conversation-alpha", b""),
+            Err(OpenMlsError::EmptyApplicationMessage)
+        ));
     }
 
     #[test]

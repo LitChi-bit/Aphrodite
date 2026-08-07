@@ -52,6 +52,16 @@ struct KeyPackageResponse {
     expires_at: u64,
 }
 
+#[derive(Debug, Serialize)]
+struct GroupResponse {
+    group_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ApplicationMessageResponse {
+    ciphertext: String,
+}
+
 /// Opens the native OpenMLS engine using an absolute app-support directory.
 ///
 /// Returns null on invalid pointers, invalid UTF-8, relative paths, or storage
@@ -141,6 +151,86 @@ pub unsafe extern "C" fn aphrodite_openmls_generate_key_packages(
                     .map(public_key_package_response)
                     .collect::<Vec<_>>(),
             )),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
+        }
+    })
+}
+
+/// Creates a persisted one-member MLS group for a conversation.
+///
+/// # Safety
+/// `handle` must be null or a live handle returned by `aphrodite_openmls_open`.
+/// `conversation_id` must be null or a valid NUL-terminated UTF-8 string. The
+/// handle must not be closed concurrently with this call.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_create_group(
+    handle: *mut AphroditeOpenMlsHandle,
+    conversation_id: *const c_char,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        let Some(conversation_id) = read_c_string(conversation_id) else {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "conversation_id must be valid UTF-8",
+            ));
+        };
+
+        match engine.create_group(conversation_id) {
+            Ok(group_id) => response_buffer(success_response(GroupResponse {
+                group_id: encode_bytes(&group_id),
+            })),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
+        }
+    })
+}
+
+/// Encrypts an MLS application message with the persisted group state.
+///
+/// # Safety
+/// `handle` must be null or a live handle returned by `aphrodite_openmls_open`.
+/// `conversation_id` must be null or a valid NUL-terminated UTF-8 string.
+/// `plaintext` must point to `plaintext_len` readable bytes for this call, unless
+/// `plaintext_len` is zero. The handle must not be closed concurrently with this call.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_encrypt_application_message(
+    handle: *mut AphroditeOpenMlsHandle,
+    conversation_id: *const c_char,
+    plaintext: *const u8,
+    plaintext_len: usize,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        let Some(conversation_id) = read_c_string(conversation_id) else {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "conversation_id must be valid UTF-8",
+            ));
+        };
+        if plaintext.is_null() && plaintext_len > 0 {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "plaintext must not be null when plaintext_len is nonzero",
+            ));
+        }
+        let plaintext = if plaintext_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(plaintext, plaintext_len) }
+        };
+
+        match engine.encrypt_application_message(conversation_id, plaintext) {
+            Ok(ciphertext) => response_buffer(success_response(ApplicationMessageResponse {
+                ciphertext: encode_bytes(&ciphertext),
+            })),
             Err(error) => {
                 response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
             }
@@ -249,6 +339,11 @@ fn response_buffer<T: Serialize>(response: FfiResponse<T>) -> AphroditeOpenMlsBu
 fn error_code(error: &OpenMlsError) -> &'static str {
     match error {
         OpenMlsError::EmptyDeviceId => "empty_device_id",
+        OpenMlsError::EmptyConversationId => "empty_conversation_id",
+        OpenMlsError::GroupAlreadyExists => "group_already_exists",
+        OpenMlsError::GroupNotFound => "group_not_found",
+        OpenMlsError::GroupPersistenceMissing => "group_persistence_missing",
+        OpenMlsError::EmptyApplicationMessage => "empty_application_message",
         OpenMlsError::DeviceNotInitialized => "device_not_initialized",
         OpenMlsError::InvalidKeyPackageBatchSize => "invalid_key_package_batch_size",
         OpenMlsError::KeyPackageAlreadyExpired => "key_package_already_expired",
@@ -304,6 +399,41 @@ mod tests {
         assert!(packages_json.contains("signature"));
         unsafe {
             aphrodite_openmls_free_buffer(packages);
+            aphrodite_openmls_close(handle);
+        }
+    }
+
+    #[test]
+    fn creates_group_and_encrypts_public_tls_ciphertext() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let directory =
+            CString::new(directory.path().to_str().expect("UTF-8 path")).expect("CString");
+        let handle = unsafe { aphrodite_openmls_open(directory.as_ptr()) };
+        assert!(!handle.is_null());
+        let device = CString::new("device-ffi-group").expect("CString");
+        let identity = unsafe { aphrodite_openmls_initialize_device(handle, device.as_ptr()) };
+        unsafe { aphrodite_openmls_free_buffer(identity) };
+        let conversation = CString::new("conversation-ffi-group").expect("CString");
+        let group = unsafe { aphrodite_openmls_create_group(handle, conversation.as_ptr()) };
+        let group_json = read_buffer(&group);
+        assert!(group_json.contains("\"ok\":true"));
+        assert!(group_json.contains("group_id"));
+        unsafe { aphrodite_openmls_free_buffer(group) };
+
+        let plaintext = b"binary\0payload";
+        let ciphertext = unsafe {
+            aphrodite_openmls_encrypt_application_message(
+                handle,
+                conversation.as_ptr(),
+                plaintext.as_ptr(),
+                plaintext.len(),
+            )
+        };
+        let ciphertext_json = read_buffer(&ciphertext);
+        assert!(ciphertext_json.contains("\"ok\":true"));
+        assert!(ciphertext_json.contains("ciphertext"));
+        unsafe {
+            aphrodite_openmls_free_buffer(ciphertext);
             aphrodite_openmls_close(handle);
         }
     }

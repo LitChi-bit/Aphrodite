@@ -25,6 +25,14 @@ AphroditeOpenMlsBuffer aphrodite_openmls_generate_key_packages(
     AphroditeOpenMlsHandle *handle,
     uint32_t count,
     uint64_t expires_at);
+AphroditeOpenMlsBuffer aphrodite_openmls_create_group(
+    AphroditeOpenMlsHandle *handle,
+    const char *conversation_id);
+AphroditeOpenMlsBuffer aphrodite_openmls_encrypt_application_message(
+    AphroditeOpenMlsHandle *handle,
+    const char *conversation_id,
+    const uint8_t *plaintext,
+    size_t plaintext_len);
 void aphrodite_openmls_close(AphroditeOpenMlsHandle *handle);
 void aphrodite_openmls_free_buffer(AphroditeOpenMlsBuffer buffer);
 
