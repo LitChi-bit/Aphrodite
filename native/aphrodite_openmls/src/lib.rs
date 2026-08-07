@@ -5,14 +5,18 @@
 
 use std::{
     path::{Path, PathBuf},
-    time::Duration,
+    sync::RwLock,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use openmls::prelude::{BasicCredential, Ciphersuite, CredentialWithKey, OpenMlsProvider};
+use openmls::prelude::{
+    tls_codec::Serialize as TlsSerialize, BasicCredential, Ciphersuite, CredentialWithKey,
+    KeyPackage, KeyPackageBundle, KeyPackageNewError, Lifetime, OpenMlsProvider,
+};
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
-use openmls_traits::types::CryptoError;
+use openmls_traits::{signatures::Signer, types::CryptoError};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -20,6 +24,9 @@ use thiserror::Error;
 pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
 const DEVICE_IDENTITIES_TABLE: &str = "aphrodite_device_identities";
+const KEY_PACKAGE_SIGNATURE_LABEL: &[u8] = b"Aphrodite KeyPackage v1\0";
+const MAX_KEY_PACKAGE_BATCH_SIZE: usize = 20;
+const MAX_KEY_PACKAGE_LIFETIME_SECONDS: u64 = 60 * 60 * 24 * 84;
 
 /// A caller-provided application support directory, with a fixed private MLS
 /// database filename. The path is deliberately native-only and must not be
@@ -38,6 +45,33 @@ impl PrivateStatePath {
 
     pub fn as_path(&self) -> &Path {
         &self.0
+    }
+}
+
+/// A public KeyPackage and an application-layer signature for server binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenMlsKeyPackage {
+    ciphersuite: Ciphersuite,
+    key_package: Vec<u8>,
+    signature: Vec<u8>,
+    expires_at: u64,
+}
+
+impl OpenMlsKeyPackage {
+    pub fn ciphersuite(&self) -> Ciphersuite {
+        self.ciphersuite
+    }
+
+    pub fn key_package(&self) -> &[u8] {
+        &self.key_package
+    }
+
+    pub fn signature(&self) -> &[u8] {
+        &self.signature
+    }
+
+    pub fn expires_at(&self) -> u64 {
+        self.expires_at
     }
 }
 
@@ -75,12 +109,14 @@ impl OpenMlsDeviceIdentity {
 /// It deliberately does not expose the provider, storage, or private signer.
 pub struct NativeMlsEngine {
     provider: NativeMlsProvider,
+    device_identity: RwLock<Option<OpenMlsDeviceIdentity>>,
 }
 
 impl NativeMlsEngine {
     pub fn open(state_path: &PrivateStatePath) -> Result<Self, OpenMlsError> {
         Ok(Self {
             provider: NativeMlsProvider::open(state_path)?,
+            device_identity: RwLock::new(None),
         })
     }
 
@@ -88,7 +124,66 @@ impl NativeMlsEngine {
         &self,
         device_id: impl AsRef<str>,
     ) -> Result<OpenMlsDeviceIdentity, OpenMlsError> {
-        self.provider.initialize_device(device_id)
+        let identity = self.provider.initialize_device(device_id)?;
+        *self
+            .device_identity
+            .write()
+            .map_err(|_| OpenMlsError::IdentityLockPoisoned)? = Some(identity.clone());
+        Ok(identity)
+    }
+
+    pub fn generate_key_packages(
+        &self,
+        count: usize,
+        expires_at: u64,
+    ) -> Result<Vec<OpenMlsKeyPackage>, OpenMlsError> {
+        if count == 0 || count > MAX_KEY_PACKAGE_BATCH_SIZE {
+            return Err(OpenMlsError::InvalidKeyPackageBatchSize);
+        }
+        let now = unix_timestamp()?;
+        if expires_at <= now {
+            return Err(OpenMlsError::KeyPackageAlreadyExpired);
+        }
+        let lifetime_seconds = expires_at - now;
+        if lifetime_seconds > MAX_KEY_PACKAGE_LIFETIME_SECONDS {
+            return Err(OpenMlsError::KeyPackageLifetimeTooLong);
+        }
+
+        let identity = self
+            .device_identity
+            .read()
+            .map_err(|_| OpenMlsError::IdentityLockPoisoned)?
+            .clone()
+            .ok_or(OpenMlsError::DeviceNotInitialized)?;
+        let signer = self.provider.read_device_signer(&identity)?;
+        let credential_with_key = identity.credential_with_key();
+        let lifetime = Lifetime::init(now.saturating_sub(60 * 60), expires_at);
+        let mut packages = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            let bundle: KeyPackageBundle = KeyPackage::builder()
+                .key_package_lifetime(lifetime)
+                .build(
+                    CIPHERSUITE,
+                    &self.provider,
+                    &signer,
+                    credential_with_key.clone(),
+                )
+                .map_err(OpenMlsError::KeyPackageCreation)?;
+            let key_package = bundle
+                .key_package()
+                .tls_serialize_detached()
+                .map_err(OpenMlsError::TlsSerialization)?;
+            let signature = sign_public_key_package(&signer, &key_package, expires_at)?;
+            packages.push(OpenMlsKeyPackage {
+                ciphersuite: CIPHERSUITE,
+                key_package,
+                signature,
+                expires_at,
+            });
+        }
+
+        Ok(packages)
     }
 }
 
@@ -235,6 +330,29 @@ impl NativeMlsProvider {
     }
 }
 
+fn unix_timestamp() -> Result<u64, OpenMlsError> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| OpenMlsError::SystemClockBeforeEpoch)?
+        .as_secs())
+}
+
+fn sign_public_key_package(
+    signer: &SignatureKeyPair,
+    key_package: &[u8],
+    expires_at: u64,
+) -> Result<Vec<u8>, OpenMlsError> {
+    let mut payload = Vec::with_capacity(
+        KEY_PACKAGE_SIGNATURE_LABEL.len() + key_package.len() + std::mem::size_of::<u64>(),
+    );
+    payload.extend_from_slice(KEY_PACKAGE_SIGNATURE_LABEL);
+    payload.extend_from_slice(key_package);
+    payload.extend_from_slice(&expires_at.to_be_bytes());
+    signer
+        .sign(&payload)
+        .map_err(|_| OpenMlsError::KeyPackageApplicationSignature)
+}
+
 fn configure_connection(connection: &Connection) -> Result<(), rusqlite::Error> {
     connection.busy_timeout(Duration::from_secs(5))?;
     connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
@@ -310,6 +428,24 @@ pub enum OpenMlsError {
     MissingSignatureKeyPair,
     #[error("device identity initialization lost a race without a persisted winner")]
     IdentityInitializationRace,
+    #[error("device identity must be initialized before generating KeyPackages")]
+    DeviceNotInitialized,
+    #[error("KeyPackage batch size must be between 1 and 20")]
+    InvalidKeyPackageBatchSize,
+    #[error("KeyPackage expiration must be in the future")]
+    KeyPackageAlreadyExpired,
+    #[error("KeyPackage lifetime must not exceed 84 days")]
+    KeyPackageLifetimeTooLong,
+    #[error("the system clock is before the Unix epoch")]
+    SystemClockBeforeEpoch,
+    #[error("device identity lock was poisoned")]
+    IdentityLockPoisoned,
+    #[error("failed to create OpenMLS KeyPackage: {0}")]
+    KeyPackageCreation(KeyPackageNewError),
+    #[error("failed to serialize public OpenMLS protocol material: {0}")]
+    TlsSerialization(openmls::prelude::Error),
+    #[error("failed to sign the public KeyPackage envelope")]
+    KeyPackageApplicationSignature,
     #[error("failed to initialize OpenMLS storage: {0}")]
     StorageMigration(String),
     #[error("OpenMLS SQLite storage failed: {0}")]
@@ -327,6 +463,8 @@ impl From<CryptoError> for OpenMlsError {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Barrier};
+
+    use openmls::prelude::{tls_codec::Deserialize as TlsDeserialize, OpenMlsCrypto};
 
     use super::*;
     use tempfile::TempDir;
@@ -451,6 +589,113 @@ mod tests {
         reopened
             .read_device_signer(&first_identity)
             .expect("winning signer is persisted");
+    }
+
+    #[test]
+    fn requires_initialized_device_before_generating_key_packages() {
+        let support_dir = TempDir::new().expect("temporary support directory");
+        let state_path = PrivateStatePath::from_app_support_dir(support_dir.path())
+            .expect("temporary directory is absolute");
+        let engine = NativeMlsEngine::open(&state_path).expect("engine opens");
+        let now = unix_timestamp().expect("clock is valid");
+
+        assert!(matches!(
+            engine.generate_key_packages(1, now + 60),
+            Err(OpenMlsError::DeviceNotInitialized)
+        ));
+    }
+
+    #[test]
+    fn validates_key_package_batch_and_lifetime() {
+        let support_dir = TempDir::new().expect("temporary support directory");
+        let state_path = PrivateStatePath::from_app_support_dir(support_dir.path())
+            .expect("temporary directory is absolute");
+        let engine = NativeMlsEngine::open(&state_path).expect("engine opens");
+        engine
+            .initialize_device("device-alpha")
+            .expect("identity initializes");
+        let now = unix_timestamp().expect("clock is valid");
+
+        assert!(matches!(
+            engine.generate_key_packages(0, now + 60),
+            Err(OpenMlsError::InvalidKeyPackageBatchSize)
+        ));
+        assert!(matches!(
+            engine.generate_key_packages(MAX_KEY_PACKAGE_BATCH_SIZE + 1, now + 60),
+            Err(OpenMlsError::InvalidKeyPackageBatchSize)
+        ));
+        assert!(matches!(
+            engine.generate_key_packages(1, now),
+            Err(OpenMlsError::KeyPackageAlreadyExpired)
+        ));
+        assert!(matches!(
+            engine.generate_key_packages(1, now + MAX_KEY_PACKAGE_LIFETIME_SECONDS + 1),
+            Err(OpenMlsError::KeyPackageLifetimeTooLong)
+        ));
+    }
+
+    #[test]
+    fn generates_public_key_packages_and_persists_private_bundles() {
+        let support_dir = TempDir::new().expect("temporary support directory");
+        let state_path = PrivateStatePath::from_app_support_dir(support_dir.path())
+            .expect("temporary directory is absolute");
+        let engine = NativeMlsEngine::open(&state_path).expect("engine opens");
+        engine
+            .initialize_device("device-alpha")
+            .expect("identity initializes");
+        let now = unix_timestamp().expect("clock is valid");
+        let packages = engine
+            .generate_key_packages(3, now + 3600)
+            .expect("key packages generate");
+
+        assert_eq!(packages.len(), 3);
+        assert!(packages
+            .iter()
+            .all(|package| !package.key_package().is_empty() && !package.signature().is_empty()));
+        assert!(packages
+            .iter()
+            .all(|package| package.ciphersuite() == CIPHERSUITE));
+        assert!(packages
+            .windows(2)
+            .all(|pair| pair[0].key_package() != pair[1].key_package()));
+
+        let identity = engine
+            .device_identity
+            .read()
+            .expect("identity lock is healthy")
+            .clone()
+            .expect("identity exists");
+        for package in &packages {
+            let mut serialized = package.key_package();
+            let parsed = openmls::prelude::KeyPackageIn::tls_deserialize(&mut serialized)
+                .expect("public key package is valid TLS material");
+            assert!(!parsed
+                .tls_serialize_detached()
+                .expect("re-serializes")
+                .is_empty());
+            let mut signed_payload = Vec::new();
+            signed_payload.extend_from_slice(KEY_PACKAGE_SIGNATURE_LABEL);
+            signed_payload.extend_from_slice(package.key_package());
+            signed_payload.extend_from_slice(&package.expires_at().to_be_bytes());
+            engine
+                .provider
+                .crypto()
+                .verify_signature(
+                    CIPHERSUITE.signature_algorithm(),
+                    &signed_payload,
+                    identity.signature_public_key(),
+                    package.signature(),
+                )
+                .expect("application signature verifies");
+        }
+
+        let inspection = Connection::open(state_path.as_path()).expect("database reopens");
+        let stored: i64 = inspection
+            .query_row("SELECT COUNT(*) FROM openmls_key_packages", [], |row| {
+                row.get(0)
+            })
+            .expect("stored key packages are queryable");
+        assert_eq!(stored, 3);
     }
 
     #[test]
