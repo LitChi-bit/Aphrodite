@@ -5,7 +5,7 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::RwLock,
+    sync::{Mutex, RwLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -19,6 +19,8 @@ use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
 use openmls_traits::{signatures::Signer, types::CryptoError};
 use serde::Serialize;
 use thiserror::Error;
+
+pub mod ffi;
 
 /// The supported RFC 9420 mandatory-to-implement ciphersuite.
 pub const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
@@ -110,6 +112,7 @@ impl OpenMlsDeviceIdentity {
 pub struct NativeMlsEngine {
     provider: NativeMlsProvider,
     device_identity: RwLock<Option<OpenMlsDeviceIdentity>>,
+    operation_lock: Mutex<()>,
 }
 
 impl NativeMlsEngine {
@@ -117,6 +120,7 @@ impl NativeMlsEngine {
         Ok(Self {
             provider: NativeMlsProvider::open(state_path)?,
             device_identity: RwLock::new(None),
+            operation_lock: Mutex::new(()),
         })
     }
 
@@ -124,6 +128,10 @@ impl NativeMlsEngine {
         &self,
         device_id: impl AsRef<str>,
     ) -> Result<OpenMlsDeviceIdentity, OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
         let identity = self.provider.initialize_device(device_id)?;
         *self
             .device_identity
@@ -137,6 +145,10 @@ impl NativeMlsEngine {
         count: usize,
         expires_at: u64,
     ) -> Result<Vec<OpenMlsKeyPackage>, OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
         if count == 0 || count > MAX_KEY_PACKAGE_BATCH_SIZE {
             return Err(OpenMlsError::InvalidKeyPackageBatchSize);
         }
@@ -440,6 +452,8 @@ pub enum OpenMlsError {
     SystemClockBeforeEpoch,
     #[error("device identity lock was poisoned")]
     IdentityLockPoisoned,
+    #[error("native OpenMLS operation lock was poisoned")]
+    OperationLockPoisoned,
     #[error("failed to create OpenMLS KeyPackage: {0}")]
     KeyPackageCreation(KeyPackageNewError),
     #[error("failed to serialize public OpenMLS protocol material: {0}")]
