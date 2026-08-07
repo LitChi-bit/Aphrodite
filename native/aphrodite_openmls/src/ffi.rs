@@ -62,6 +62,18 @@ struct ApplicationMessageResponse {
     ciphertext: String,
 }
 
+#[derive(Debug, Serialize)]
+struct WelcomeResponse {
+    commit: String,
+    welcome: String,
+    group_info: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlaintextResponse {
+    plaintext: String,
+}
+
 /// Opens the native OpenMLS engine using an absolute app-support directory.
 ///
 /// Returns null on invalid pointers, invalid UTF-8, relative paths, or storage
@@ -234,6 +246,74 @@ pub unsafe extern "C" fn aphrodite_openmls_encrypt_application_message(
             Err(error) => {
                 response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
             }
+        }
+    })
+}
+
+/// Adds a member from a public TLS KeyPackage and returns Commit/Welcome material.
+///
+/// # Safety
+/// `handle` and `conversation_id` follow the same rules as the group creation
+/// entry point. `key_package` must point to `key_package_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_add_member(
+    handle: *mut AphroditeOpenMlsHandle,
+    conversation_id: *const c_char,
+    key_package: *const u8,
+    key_package_len: usize,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else { return response_buffer(error_response::<()>("invalid_handle", "handle is null")); };
+        let Some(conversation_id) = read_c_string(conversation_id) else { return response_buffer(error_response::<()>("invalid_argument", "conversation_id must be valid UTF-8")); };
+        if key_package.is_null() && key_package_len > 0 { return response_buffer(error_response::<()>("invalid_argument", "key_package must not be null when key_package_len is nonzero")); }
+        let bytes = if key_package_len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(key_package, key_package_len) } };
+        match engine.add_member(conversation_id, bytes) {
+            Ok(bundle) => response_buffer(success_response(WelcomeResponse { commit: encode_bytes(bundle.commit()), welcome: encode_bytes(bundle.welcome()), group_info: bundle.group_info().map(encode_bytes) })),
+            Err(error) => response_buffer(error_response::<()>(error_code(&error), &error.to_string())),
+        }
+    })
+}
+
+/// Joins an MLS group from a public TLS Welcome.
+///
+/// # Safety
+/// `handle` must be live and `welcome` must point to `welcome_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_join_group(
+    handle: *mut AphroditeOpenMlsHandle,
+    welcome: *const u8,
+    welcome_len: usize,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else { return response_buffer(error_response::<()>("invalid_handle", "handle is null")); };
+        if welcome.is_null() && welcome_len > 0 { return response_buffer(error_response::<()>("invalid_argument", "welcome must not be null when welcome_len is nonzero")); }
+        let bytes = if welcome_len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(welcome, welcome_len) } };
+        match engine.join_group(bytes) {
+            Ok(group_id) => response_buffer(success_response(GroupResponse { group_id: encode_bytes(&group_id) })),
+            Err(error) => response_buffer(error_response::<()>(error_code(&error), &error.to_string())),
+        }
+    })
+}
+
+/// Decrypts a public TLS MLS application message and returns hex plaintext.
+///
+/// # Safety
+/// `handle` must be live and `ciphertext` must point to `ciphertext_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_decrypt_application_message(
+    handle: *mut AphroditeOpenMlsHandle,
+    conversation_id: *const c_char,
+    ciphertext: *const u8,
+    ciphertext_len: usize,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else { return response_buffer(error_response::<()>("invalid_handle", "handle is null")); };
+        let Some(conversation_id) = read_c_string(conversation_id) else { return response_buffer(error_response::<()>("invalid_argument", "conversation_id must be valid UTF-8")); };
+        if ciphertext.is_null() && ciphertext_len > 0 { return response_buffer(error_response::<()>("invalid_argument", "ciphertext must not be null when ciphertext_len is nonzero")); }
+        let bytes = if ciphertext_len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(ciphertext, ciphertext_len) } };
+        match engine.decrypt_application_message(conversation_id, bytes) {
+            Ok(plaintext) => response_buffer(success_response(PlaintextResponse { plaintext: encode_bytes(&plaintext) })),
+            Err(error) => response_buffer(error_response::<()>(error_code(&error), &error.to_string())),
         }
     })
 }

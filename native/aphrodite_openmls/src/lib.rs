@@ -10,9 +10,10 @@ use std::{
 };
 
 use openmls::prelude::{
-    tls_codec::Serialize as TlsSerialize, BasicCredential, Ciphersuite, CredentialWithKey, GroupId,
-    KeyPackage, KeyPackageBundle, KeyPackageNewError, Lifetime, MlsGroup, MlsGroupCreateConfig,
-    OpenMlsProvider,
+    tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize}, BasicCredential,
+    Ciphersuite, CredentialWithKey, GroupId, KeyPackage, KeyPackageBundle, KeyPackageIn,
+    KeyPackageNewError, Lifetime, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig,
+    MlsMessageBodyIn, MlsMessageIn, OpenMlsProvider, ProcessedMessageContent,
 };
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::RustCrypto;
@@ -58,6 +59,19 @@ pub struct OpenMlsKeyPackage {
     key_package: Vec<u8>,
     signature: Vec<u8>,
     expires_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenMlsWelcomeBundle {
+    commit: Vec<u8>,
+    welcome: Vec<u8>,
+    group_info: Option<Vec<u8>>,
+}
+
+impl OpenMlsWelcomeBundle {
+    pub fn commit(&self) -> &[u8] { &self.commit }
+    pub fn welcome(&self) -> &[u8] { &self.welcome }
+    pub fn group_info(&self) -> Option<&[u8]> { self.group_info.as_deref() }
 }
 
 impl OpenMlsKeyPackage {
@@ -160,7 +174,7 @@ impl NativeMlsEngine {
         let group = MlsGroup::new_with_group_id(
             &self.provider,
             &signer,
-            &MlsGroupCreateConfig::default(),
+            &MlsGroupCreateConfig::builder().use_ratchet_tree_extension(true).build(),
             group_id.clone(),
             identity.credential_with_key(),
         )
@@ -197,6 +211,70 @@ impl NativeMlsEngine {
             .map_err(|error| OpenMlsError::ApplicationMessageCreation(error.to_string()))?
             .tls_serialize_detached()
             .map_err(OpenMlsError::TlsSerialization)
+    }
+
+    pub fn add_member(
+        &self,
+        conversation_id: impl AsRef<str>,
+        key_package_bytes: &[u8],
+    ) -> Result<OpenMlsWelcomeBundle, OpenMlsError> {
+        let _operation = self.operation_lock.lock().map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let group_id = group_id_from_conversation_id(conversation_id)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?.ok_or(OpenMlsError::GroupNotFound)?;
+        let mut serialized = key_package_bytes;
+        let key_package = KeyPackageIn::tls_deserialize(&mut serialized)
+            .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?
+            .validate(self.provider.crypto(), Default::default())
+            .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
+        if !serialized.is_empty() { return Err(OpenMlsError::TrailingProtocolMaterial); }
+        let identity = self.require_device_identity()?;
+        let signer = self.provider.read_device_signer(&identity)?;
+        let (commit, welcome, group_info) = group.add_members(&self.provider, &signer, &[key_package])
+            .map_err(|error| OpenMlsError::MemberAddition(error.to_string()))?;
+        let commit = commit.tls_serialize_detached().map_err(OpenMlsError::TlsSerialization)?;
+        let welcome = welcome.tls_serialize_detached().map_err(OpenMlsError::TlsSerialization)?;
+        let group_info = group_info.map(|info| info.tls_serialize_detached().map_err(OpenMlsError::TlsSerialization)).transpose()?;
+        group.merge_pending_commit(&self.provider).map_err(|error| OpenMlsError::CommitMerge(error.to_string()))?;
+        Ok(OpenMlsWelcomeBundle { commit, welcome, group_info })
+    }
+
+    pub fn join_group(&self, welcome_bytes: &[u8]) -> Result<Vec<u8>, OpenMlsError> {
+        let _operation = self.operation_lock.lock().map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let mut serialized = welcome_bytes;
+        let message = MlsMessageIn::tls_deserialize(&mut serialized)
+            .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
+        if !serialized.is_empty() { return Err(OpenMlsError::TrailingProtocolMaterial); }
+        let welcome = match message.extract() {
+            MlsMessageBodyIn::Welcome(welcome) => welcome,
+            _ => return Err(OpenMlsError::ExpectedWelcome),
+        };
+        let staged = openmls::prelude::StagedWelcome::new_from_welcome(
+            &self.provider, &MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build(), welcome, None,
+        ).map_err(|error| OpenMlsError::WelcomeProcessing(error.to_string()))?;
+        let group = staged.into_group(&self.provider).map_err(|error| OpenMlsError::WelcomeProcessing(error.to_string()))?;
+        Ok(group.group_id().to_vec())
+    }
+
+    pub fn decrypt_application_message(
+        &self,
+        conversation_id: impl AsRef<str>,
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, OpenMlsError> {
+        let _operation = self.operation_lock.lock().map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let group_id = group_id_from_conversation_id(conversation_id)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?.ok_or(OpenMlsError::GroupNotFound)?;
+        let mut serialized = ciphertext;
+        let message = MlsMessageIn::tls_deserialize(&mut serialized)
+            .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
+        if !serialized.is_empty() { return Err(OpenMlsError::TrailingProtocolMaterial); }
+        let protocol_message = message.try_into_protocol_message()
+            .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
+        let processed = group.process_message(&self.provider, protocol_message)
+            .map_err(|error| OpenMlsError::ApplicationMessageProcessing(error.to_string()))?;
+        match processed.into_content() {
+            ProcessedMessageContent::ApplicationMessage(message) => Ok(message.into_bytes()),
+            _ => Err(OpenMlsError::ExpectedApplicationMessage),
+        }
     }
 
     pub fn generate_key_packages(
@@ -540,6 +618,22 @@ pub enum OpenMlsError {
     GroupCreation(String),
     #[error("failed to create MLS application message: {0}")]
     ApplicationMessageCreation(String),
+    #[error("failed to parse MLS protocol material: {0}")]
+    ProtocolMaterialParsing(String),
+    #[error("MLS protocol material contains trailing bytes")]
+    TrailingProtocolMaterial,
+    #[error("expected an MLS Welcome message")]
+    ExpectedWelcome,
+    #[error("failed to process MLS Welcome: {0}")]
+    WelcomeProcessing(String),
+    #[error("failed to add MLS member: {0}")]
+    MemberAddition(String),
+    #[error("failed to merge MLS Commit: {0}")]
+    CommitMerge(String),
+    #[error("failed to process MLS application message: {0}")]
+    ApplicationMessageProcessing(String),
+    #[error("expected an MLS application message")]
+    ExpectedApplicationMessage,
     #[error("failed to create OpenMLS KeyPackage: {0}")]
     KeyPackageCreation(KeyPackageNewError),
     #[error("failed to serialize public OpenMLS protocol material: {0}")]
@@ -881,6 +975,64 @@ mod tests {
 
         assert_ne!(first.signature_public_key(), second.signature_public_key());
         assert_ne!(first.credential_identity(), second.credential_identity());
+    }
+
+    #[test]
+    fn completes_two_device_welcome_commit_and_message_round_trip() {
+        let creator_dir = TempDir::new().expect("creator support directory");
+        let joiner_dir = TempDir::new().expect("joiner support directory");
+        let creator_path = PrivateStatePath::from_app_support_dir(creator_dir.path())
+            .expect("creator directory is absolute");
+        let joiner_path = PrivateStatePath::from_app_support_dir(joiner_dir.path())
+            .expect("joiner directory is absolute");
+        let conversation_id = "conversation-two-device";
+
+        let creator = NativeMlsEngine::open(&creator_path).expect("creator opens");
+        creator
+            .initialize_device("device-creator")
+            .expect("creator initializes");
+        creator
+            .create_group(conversation_id)
+            .expect("creator group creates");
+
+        let joiner = NativeMlsEngine::open(&joiner_path).expect("joiner opens");
+        joiner
+            .initialize_device("device-joiner")
+            .expect("joiner initializes");
+        let now = unix_timestamp().expect("clock is valid");
+        let key_package = joiner
+            .generate_key_packages(1, now + 3600)
+            .expect("joiner key package generates")
+            .pop()
+            .expect("one key package exists");
+
+        let bundle = creator
+            .add_member(conversation_id, key_package.key_package())
+            .expect("creator adds joiner and merges commit");
+        assert!(!bundle.commit().is_empty());
+        assert!(!bundle.welcome().is_empty());
+        assert!(bundle.group_info().is_none() || !bundle.group_info().unwrap().is_empty());
+
+        let joined_group_id = joiner
+            .join_group(bundle.welcome())
+            .expect("joiner consumes welcome");
+        assert_eq!(joined_group_id, conversation_id.as_bytes());
+
+        let ciphertext = creator
+            .encrypt_application_message(conversation_id, b"hello from creator")
+            .expect("creator encrypts");
+        let plaintext = joiner
+            .decrypt_application_message(conversation_id, &ciphertext)
+            .expect("joiner decrypts");
+        assert_eq!(plaintext, b"hello from creator");
+
+        let response = joiner
+            .encrypt_application_message(conversation_id, b"hello from joiner")
+            .expect("joiner encrypts");
+        let response_plaintext = creator
+            .decrypt_application_message(conversation_id, &response)
+            .expect("creator decrypts");
+        assert_eq!(response_plaintext, b"hello from joiner");
     }
 
     #[test]

@@ -33,6 +33,20 @@ AphroditeOpenMlsBuffer aphrodite_openmls_encrypt_application_message(
     const char *conversation_id,
     const uint8_t *plaintext,
     size_t plaintext_len);
+AphroditeOpenMlsBuffer aphrodite_openmls_add_member(
+    AphroditeOpenMlsHandle *handle,
+    const char *conversation_id,
+    const uint8_t *key_package,
+    size_t key_package_len);
+AphroditeOpenMlsBuffer aphrodite_openmls_join_group(
+    AphroditeOpenMlsHandle *handle,
+    const uint8_t *welcome,
+    size_t welcome_len);
+AphroditeOpenMlsBuffer aphrodite_openmls_decrypt_application_message(
+    AphroditeOpenMlsHandle *handle,
+    const char *conversation_id,
+    const uint8_t *ciphertext,
+    size_t ciphertext_len);
 void aphrodite_openmls_close(AphroditeOpenMlsHandle *handle);
 void aphrodite_openmls_free_buffer(AphroditeOpenMlsBuffer buffer);
 
