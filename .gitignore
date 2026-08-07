@@ -46,6 +46,7 @@ id_rsa*
 
 # ── 安全：项目工具数据 ──
 .workbuddy/
+.git-corrupt-*/
 
 # ── 非源码：内部文档 ──
 *开发计划书*.md
