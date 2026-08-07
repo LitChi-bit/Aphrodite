@@ -23,6 +23,34 @@ abstract interface class NativeOpenMlsApi {
     int expiresAt,
   );
 
+  AphroditeOpenMlsBuffer createGroup(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  );
+
+  AphroditeOpenMlsBuffer addMember(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> keyPackage,
+  );
+
+  AphroditeOpenMlsBuffer joinGroup(
+    ffi.Pointer<ffi.Void> handle,
+    List<int> welcome,
+  );
+
+  AphroditeOpenMlsBuffer encryptApplicationMessage(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> plaintext,
+  );
+
+  AphroditeOpenMlsBuffer decryptApplicationMessage(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> ciphertext,
+  );
+
   void close(ffi.Pointer<ffi.Void> handle);
 
   void freeBuffer(AphroditeOpenMlsBuffer buffer);
@@ -41,6 +69,24 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
             library.lookupFunction<_GenerateNative, _GenerateDart>(
           'aphrodite_openmls_generate_key_packages',
         ),
+        _createGroup =
+            library.lookupFunction<_CreateGroupNative, _CreateGroupDart>(
+          'aphrodite_openmls_create_group',
+        ),
+        _addMember = library.lookupFunction<_AddMemberNative, _AddMemberDart>(
+          'aphrodite_openmls_add_member',
+        ),
+        _joinGroup = library.lookupFunction<_JoinGroupNative, _JoinGroupDart>(
+          'aphrodite_openmls_join_group',
+        ),
+        _encryptApplicationMessage = library.lookupFunction<
+            _EncryptApplicationMessageNative, _EncryptApplicationMessageDart>(
+          'aphrodite_openmls_encrypt_application_message',
+        ),
+        _decryptApplicationMessage = library.lookupFunction<
+            _DecryptApplicationMessageNative, _DecryptApplicationMessageDart>(
+          'aphrodite_openmls_decrypt_application_message',
+        ),
         _close = library.lookupFunction<_CloseNative, _CloseDart>(
           'aphrodite_openmls_close',
         ),
@@ -52,6 +98,11 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
   final _OpenDart _open;
   final _InitializeDart _initializeDevice;
   final _GenerateDart _generateKeyPackages;
+  final _CreateGroupDart _createGroup;
+  final _AddMemberDart _addMember;
+  final _JoinGroupDart _joinGroup;
+  final _EncryptApplicationMessageDart _encryptApplicationMessage;
+  final _DecryptApplicationMessageDart _decryptApplicationMessage;
   final _CloseDart _close;
   final _FreeBufferDart _freeBuffer;
 
@@ -87,6 +138,103 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
       _generateKeyPackages(handle, count, expiresAt);
 
   @override
+  AphroditeOpenMlsBuffer createGroup(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  ) {
+    final id = conversationId.toNativeUtf8();
+    try {
+      return _createGroup(handle, id.cast());
+    } finally {
+      calloc.free(id);
+    }
+  }
+
+  @override
+  AphroditeOpenMlsBuffer addMember(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> keyPackage,
+  ) {
+    final id = conversationId.toNativeUtf8();
+    final bytes = calloc<ffi.Uint8>(keyPackage.length);
+    bytes.asTypedList(keyPackage.length).setAll(0, keyPackage);
+    try {
+      return _addMember(handle, id.cast(), bytes, keyPackage.length);
+    } finally {
+      calloc.free(id);
+      calloc.free(bytes);
+    }
+  }
+
+  @override
+  AphroditeOpenMlsBuffer joinGroup(
+    ffi.Pointer<ffi.Void> handle,
+    List<int> welcome,
+  ) {
+    final bytes = calloc<ffi.Uint8>(welcome.length);
+    bytes.asTypedList(welcome.length).setAll(0, welcome);
+    try {
+      return _joinGroup(handle, bytes, welcome.length);
+    } finally {
+      calloc.free(bytes);
+    }
+  }
+
+  @override
+  AphroditeOpenMlsBuffer encryptApplicationMessage(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> plaintext,
+  ) =>
+      _withBinaryText(
+        conversationId,
+        plaintext,
+        (id, bytes) => _encryptApplicationMessage(
+          handle,
+          id,
+          bytes,
+          plaintext.length,
+        ),
+      );
+
+  @override
+  AphroditeOpenMlsBuffer decryptApplicationMessage(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> ciphertext,
+  ) =>
+      _withBinaryText(
+        conversationId,
+        ciphertext,
+        (id, bytes) => _decryptApplicationMessage(
+          handle,
+          id,
+          bytes,
+          ciphertext.length,
+        ),
+      );
+
+  AphroditeOpenMlsBuffer _withBinaryText(
+    String conversationId,
+    List<int> bytes,
+    AphroditeOpenMlsBuffer Function(
+      ffi.Pointer<ffi.Char>,
+      ffi.Pointer<ffi.Uint8>,
+    ) callback,
+  ) {
+    final id = conversationId.toNativeUtf8();
+    final data = calloc<ffi.Uint8>(bytes.length);
+    data.asTypedList(bytes.length).setAll(0, bytes);
+    try {
+      return callback(id.cast(), data);
+    } finally {
+      calloc.free(id);
+      calloc.free(data);
+    }
+  }
+
+  @override
   void close(ffi.Pointer<ffi.Void> handle) => _close(handle);
 
   @override
@@ -113,6 +261,65 @@ typedef _GenerateNative = AphroditeOpenMlsBuffer Function(
 typedef _GenerateDart = AphroditeOpenMlsBuffer Function(
   ffi.Pointer<ffi.Void>,
   int,
+  int,
+);
+
+typedef _CreateGroupNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+);
+typedef _CreateGroupDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+);
+
+typedef _AddMemberNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.UintPtr,
+);
+typedef _AddMemberDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+);
+
+typedef _JoinGroupNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.UintPtr,
+);
+typedef _JoinGroupDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+);
+
+typedef _EncryptApplicationMessageNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.UintPtr,
+);
+typedef _EncryptApplicationMessageDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+);
+
+typedef _DecryptApplicationMessageNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.UintPtr,
+);
+typedef _DecryptApplicationMessageDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
   int,
 );
 

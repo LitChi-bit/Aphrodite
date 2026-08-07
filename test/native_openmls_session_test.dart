@@ -27,7 +27,31 @@ void main() {
     expect(packages.single.keyPackage, <int>[10, 11]);
     expect(packages.single.signature, <int>[12]);
     expect(packages.single.expiresAt, DateTime.utc(2026, 8, 3, 17));
-    expect(native.releasedBuffers, 2);
+    final groupId = await session.createGroup(
+      conversationId: 'conversation-1',
+    );
+    final welcome = await session.addMember(
+      conversationId: 'conversation-1',
+      keyPackage: <int>[9, 10],
+    );
+    final joined = await session.joinGroup(welcome: welcome.welcome);
+    final ciphertext = await session.encryptApplicationMessage(
+      conversationId: 'conversation-1',
+      plaintext: <int>[98, 105, 110, 97, 114, 121, 0],
+    );
+    final plaintext = await session.decryptApplicationMessage(
+      conversationId: 'conversation-1',
+      ciphertext: ciphertext,
+    );
+
+    expect(groupId, <int>[1, 2]);
+    expect(welcome.commit, <int>[3, 4]);
+    expect(welcome.welcome, <int>[5, 6]);
+    expect(welcome.groupInfo, isNull);
+    expect(joined, <int>[1, 2]);
+    expect(ciphertext, <int>[7, 8]);
+    expect(plaintext, <int>[98, 105, 110, 97, 114, 121, 0]);
+    expect(native.releasedBuffers, 7);
 
     await session.close();
     expect(native.closed, isTrue);
@@ -103,6 +127,73 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
             'expires_at': expiresAt,
           },
         ],
+        'error': null,
+      });
+
+  @override
+  AphroditeOpenMlsBuffer createGroup(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  ) =>
+      _jsonBuffer(<String, dynamic>{
+        'abi_version': 1,
+        'ok': true,
+        'data': <String, dynamic>{'group_id': '0102'},
+        'error': null,
+      });
+
+  @override
+  AphroditeOpenMlsBuffer addMember(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> keyPackage,
+  ) =>
+      _jsonBuffer(<String, dynamic>{
+        'abi_version': 1,
+        'ok': true,
+        'data': <String, dynamic>{
+          'commit': '0304',
+          'welcome': '0506',
+          'group_info': null,
+        },
+        'error': null,
+      });
+
+  @override
+  AphroditeOpenMlsBuffer joinGroup(
+    ffi.Pointer<ffi.Void> handle,
+    List<int> welcome,
+  ) =>
+      _jsonBuffer(<String, dynamic>{
+        'abi_version': 1,
+        'ok': true,
+        'data': <String, dynamic>{'group_id': '0102'},
+        'error': null,
+      });
+
+  @override
+  AphroditeOpenMlsBuffer encryptApplicationMessage(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> plaintext,
+  ) =>
+      _jsonBuffer(<String, dynamic>{
+        'abi_version': 1,
+        'ok': true,
+        'data': <String, dynamic>{'ciphertext': '0708'},
+        'error': null,
+      });
+
+  @override
+  AphroditeOpenMlsBuffer decryptApplicationMessage(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> ciphertext,
+  ) =>
+      _jsonBuffer(<String, dynamic>{
+        'abi_version': 1,
+        'ok': true,
+        'data': <String, dynamic>{'plaintext': '62696e61727900'},
         'error': null,
       });
 

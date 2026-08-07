@@ -75,6 +75,79 @@ final class NativeOpenMlsSession {
         }).toList(growable: false);
       });
 
+  Future<List<int>> createGroup({
+    required String conversationId,
+  }) =>
+      _serialized(() {
+        final response = _readAndRelease(
+          _bindings.createGroup(_requireHandle(), conversationId),
+        );
+        final data = _requireData(response, 'create_group');
+        return _decodeHex(_requireString(data, 'group_id'));
+      });
+
+  Future<OpenMlsWelcomeBundle> addMember({
+    required String conversationId,
+    required List<int> keyPackage,
+  }) =>
+      _serialized(() {
+        final response = _readAndRelease(
+          _bindings.addMember(_requireHandle(), conversationId, keyPackage),
+        );
+        final data = _requireData(response, 'add_member');
+        final groupInfo = data['group_info'];
+        return OpenMlsWelcomeBundle(
+          commit: _decodeHex(_requireString(data, 'commit')),
+          welcome: _decodeHex(_requireString(data, 'welcome')),
+          groupInfo: groupInfo == null
+              ? null
+              : _decodeHex(groupInfo is String ? groupInfo : ''),
+        );
+      });
+
+  Future<List<int>> joinGroup({
+    required List<int> welcome,
+  }) =>
+      _serialized(() {
+        final response = _readAndRelease(
+          _bindings.joinGroup(_requireHandle(), welcome),
+        );
+        final data = _requireData(response, 'join_group');
+        return _decodeHex(_requireString(data, 'group_id'));
+      });
+
+  Future<List<int>> encryptApplicationMessage({
+    required String conversationId,
+    required List<int> plaintext,
+  }) =>
+      _serialized(() {
+        final response = _readAndRelease(
+          _bindings.encryptApplicationMessage(
+            _requireHandle(),
+            conversationId,
+            plaintext,
+          ),
+        );
+        final data = _requireData(response, 'encrypt_application_message');
+        return _decodeHex(_requireString(data, 'ciphertext'));
+      });
+
+  Future<List<int>> decryptApplicationMessage({
+    required String conversationId,
+    required List<int> ciphertext,
+  }) =>
+      _serialized(() {
+        final response = _readAndRelease(
+          _bindings.decryptApplicationMessage(
+            _requireHandle(),
+            conversationId,
+            ciphertext,
+          ),
+        );
+        final data = _requireData(response, 'decrypt_application_message');
+        return _decodeHex(_requireString(data, 'plaintext'));
+      });
+
   Future<void> close() async {
     await _operation;
     final handle = _handle;
@@ -145,6 +218,20 @@ final class NativeOpenMlsSession {
       '$operation failed: ${message is String ? message : 'unknown native error'}',
     );
   }
+}
+
+class OpenMlsWelcomeBundle {
+  OpenMlsWelcomeBundle({
+    required List<int> commit,
+    required List<int> welcome,
+    required List<int>? groupInfo,
+  })  : commit = List.unmodifiable(commit),
+        welcome = List.unmodifiable(welcome),
+        groupInfo = groupInfo == null ? null : List.unmodifiable(groupInfo);
+
+  final List<int> commit;
+  final List<int> welcome;
+  final List<int>? groupInfo;
 }
 
 class NativeOpenMlsException implements Exception {
