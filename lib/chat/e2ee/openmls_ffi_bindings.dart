@@ -51,6 +51,17 @@ abstract interface class NativeOpenMlsApi {
     List<int> ciphertext,
   );
 
+  AphroditeOpenMlsBuffer applyHandshakeMessage(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> handshake,
+  );
+
+  AphroditeOpenMlsBuffer commitPendingProposals(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  );
+
   AphroditeOpenMlsBuffer removeLocalGroup(
     ffi.Pointer<ffi.Void> handle,
     String conversationId,
@@ -92,6 +103,14 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
             _DecryptApplicationMessageNative, _DecryptApplicationMessageDart>(
           'aphrodite_openmls_decrypt_application_message',
         ),
+        _applyHandshakeMessage = library.lookupFunction<
+            _ApplyHandshakeMessageNative, _ApplyHandshakeMessageDart>(
+          'aphrodite_openmls_apply_handshake_message',
+        ),
+        _commitPendingProposals = library.lookupFunction<
+            _CommitPendingProposalsNative, _CommitPendingProposalsDart>(
+          'aphrodite_openmls_commit_pending_proposals',
+        ),
         _removeLocalGroup = library
             .lookupFunction<_RemoveLocalGroupNative, _RemoveLocalGroupDart>(
           'aphrodite_openmls_remove_local_group',
@@ -112,6 +131,8 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
   final _JoinGroupDart _joinGroup;
   final _EncryptApplicationMessageDart _encryptApplicationMessage;
   final _DecryptApplicationMessageDart _decryptApplicationMessage;
+  final _ApplyHandshakeMessageDart _applyHandshakeMessage;
+  final _CommitPendingProposalsDart _commitPendingProposals;
   final _RemoveLocalGroupDart _removeLocalGroup;
   final _CloseDart _close;
   final _FreeBufferDart _freeBuffer;
@@ -245,6 +266,36 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
   }
 
   @override
+  AphroditeOpenMlsBuffer applyHandshakeMessage(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> handshake,
+  ) =>
+      _withBinaryText(
+        conversationId,
+        handshake,
+        (id, bytes) => _applyHandshakeMessage(
+          handle,
+          id,
+          bytes,
+          handshake.length,
+        ),
+      );
+
+  @override
+  AphroditeOpenMlsBuffer commitPendingProposals(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  ) {
+    final id = conversationId.toNativeUtf8();
+    try {
+      return _commitPendingProposals(handle, id.cast());
+    } finally {
+      calloc.free(id);
+    }
+  }
+
+  @override
   AphroditeOpenMlsBuffer removeLocalGroup(
     ffi.Pointer<ffi.Void> handle,
     String conversationId,
@@ -344,6 +395,28 @@ typedef _DecryptApplicationMessageDart = AphroditeOpenMlsBuffer Function(
   ffi.Pointer<ffi.Char>,
   ffi.Pointer<ffi.Uint8>,
   int,
+);
+
+typedef _ApplyHandshakeMessageNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.UintPtr,
+);
+typedef _ApplyHandshakeMessageDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+);
+
+typedef _CommitPendingProposalsNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+);
+typedef _CommitPendingProposalsDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
 );
 
 typedef _RemoveLocalGroupNative = AphroditeOpenMlsBuffer Function(

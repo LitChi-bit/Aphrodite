@@ -43,6 +43,13 @@ void main() {
       conversationId: 'conversation-1',
       ciphertext: ciphertext,
     );
+    final handshake = await session.applyHandshakeMessage(
+      conversationId: 'conversation-1',
+      handshake: <int>[13, 14],
+    );
+    final commit = await session.commitPendingProposals(
+      conversationId: 'conversation-1',
+    );
 
     expect(groupId, <int>[1, 2]);
     expect(welcome.commit, <int>[3, 4]);
@@ -51,8 +58,14 @@ void main() {
     expect(joined, <int>[1, 2]);
     expect(ciphertext, <int>[7, 8]);
     expect(plaintext, <int>[98, 105, 110, 97, 114, 121, 0]);
+    expect(handshake.kind, 'proposal_stored');
+    expect(handshake.epoch, 1);
+    expect(commit.commit, <int>[15, 16]);
+    expect(commit.welcome, isNull);
+    expect(commit.groupInfo, <int>[17]);
+    expect(commit.epoch, 2);
     await session.removeLocalGroup(conversationId: 'conversation-1');
-    expect(native.releasedBuffers, 8);
+    expect(native.releasedBuffers, 10);
 
     await session.close();
     expect(native.closed, isTrue);
@@ -195,6 +208,36 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
         'abi_version': 1,
         'ok': true,
         'data': <String, dynamic>{'plaintext': '62696e61727900'},
+        'error': null,
+      });
+
+  @override
+  AphroditeOpenMlsBuffer applyHandshakeMessage(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> handshake,
+  ) =>
+      _jsonBuffer(<String, dynamic>{
+        'abi_version': 1,
+        'ok': true,
+        'data': <String, dynamic>{'kind': 'proposal_stored', 'epoch': 1},
+        'error': null,
+      });
+
+  @override
+  AphroditeOpenMlsBuffer commitPendingProposals(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  ) =>
+      _jsonBuffer(<String, dynamic>{
+        'abi_version': 1,
+        'ok': true,
+        'data': <String, dynamic>{
+          'commit': '0f10',
+          'welcome': null,
+          'group_info': '11',
+          'epoch': 2,
+        },
         'error': null,
       });
 

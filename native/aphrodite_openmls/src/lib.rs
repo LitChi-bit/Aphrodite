@@ -10,9 +10,9 @@ use std::{
 };
 
 use openmls::prelude::{
-    tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize}, BasicCredential,
-    Ciphersuite, CredentialWithKey, GroupId, KeyPackage, KeyPackageBundle, KeyPackageIn,
-    KeyPackageNewError, Lifetime, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig,
+    tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize},
+    BasicCredential, Ciphersuite, CredentialWithKey, GroupId, KeyPackage, KeyPackageBundle,
+    KeyPackageIn, KeyPackageNewError, Lifetime, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig,
     MlsMessageBodyIn, MlsMessageIn, OpenMlsProvider, ProcessedMessageContent,
 };
 use openmls_basic_credential::SignatureKeyPair;
@@ -69,9 +69,61 @@ pub struct OpenMlsWelcomeBundle {
 }
 
 impl OpenMlsWelcomeBundle {
-    pub fn commit(&self) -> &[u8] { &self.commit }
-    pub fn welcome(&self) -> &[u8] { &self.welcome }
-    pub fn group_info(&self) -> Option<&[u8]> { self.group_info.as_deref() }
+    pub fn commit(&self) -> &[u8] {
+        &self.commit
+    }
+    pub fn welcome(&self) -> &[u8] {
+        &self.welcome
+    }
+    pub fn group_info(&self) -> Option<&[u8]> {
+        self.group_info.as_deref()
+    }
+}
+
+/// Public material produced when committing the locally persisted proposal queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenMlsCommitBundle {
+    commit: Vec<u8>,
+    welcome: Option<Vec<u8>>,
+    group_info: Option<Vec<u8>>,
+    epoch: u64,
+}
+
+impl OpenMlsCommitBundle {
+    pub fn commit(&self) -> &[u8] {
+        &self.commit
+    }
+    pub fn welcome(&self) -> Option<&[u8]> {
+        self.welcome.as_deref()
+    }
+    pub fn group_info(&self) -> Option<&[u8]> {
+        self.group_info.as_deref()
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+}
+
+/// The result of applying authenticated MLS handshake material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenMlsHandshakeResult {
+    ProposalStored { epoch: u64 },
+    CommitMerged { epoch: u64 },
+}
+
+impl OpenMlsHandshakeResult {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::ProposalStored { .. } => "proposal_stored",
+            Self::CommitMerged { .. } => "commit_merged",
+        }
+    }
+
+    pub fn epoch(&self) -> u64 {
+        match self {
+            Self::ProposalStored { epoch } | Self::CommitMerged { epoch } => *epoch,
+        }
+    }
 }
 
 impl OpenMlsKeyPackage {
@@ -174,7 +226,9 @@ impl NativeMlsEngine {
         let group = MlsGroup::new_with_group_id(
             &self.provider,
             &signer,
-            &MlsGroupCreateConfig::builder().use_ratchet_tree_extension(true).build(),
+            &MlsGroupCreateConfig::builder()
+                .use_ratchet_tree_extension(true)
+                .build(),
             group_id.clone(),
             identity.credential_with_key(),
         )
@@ -218,40 +272,75 @@ impl NativeMlsEngine {
         conversation_id: impl AsRef<str>,
         key_package_bytes: &[u8],
     ) -> Result<OpenMlsWelcomeBundle, OpenMlsError> {
-        let _operation = self.operation_lock.lock().map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
         let group_id = group_id_from_conversation_id(conversation_id)?;
-        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?.ok_or(OpenMlsError::GroupNotFound)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?
+            .ok_or(OpenMlsError::GroupNotFound)?;
         let mut serialized = key_package_bytes;
         let key_package = KeyPackageIn::tls_deserialize(&mut serialized)
             .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?
             .validate(self.provider.crypto(), Default::default())
             .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
-        if !serialized.is_empty() { return Err(OpenMlsError::TrailingProtocolMaterial); }
+        if !serialized.is_empty() {
+            return Err(OpenMlsError::TrailingProtocolMaterial);
+        }
         let identity = self.require_device_identity()?;
         let signer = self.provider.read_device_signer(&identity)?;
-        let (commit, welcome, group_info) = group.add_members(&self.provider, &signer, &[key_package])
+        let (commit, welcome, group_info) = group
+            .add_members(&self.provider, &signer, &[key_package])
             .map_err(|error| OpenMlsError::MemberAddition(error.to_string()))?;
-        let commit = commit.tls_serialize_detached().map_err(OpenMlsError::TlsSerialization)?;
-        let welcome = welcome.tls_serialize_detached().map_err(OpenMlsError::TlsSerialization)?;
-        let group_info = group_info.map(|info| info.tls_serialize_detached().map_err(OpenMlsError::TlsSerialization)).transpose()?;
-        group.merge_pending_commit(&self.provider).map_err(|error| OpenMlsError::CommitMerge(error.to_string()))?;
-        Ok(OpenMlsWelcomeBundle { commit, welcome, group_info })
+        let commit = commit
+            .tls_serialize_detached()
+            .map_err(OpenMlsError::TlsSerialization)?;
+        let welcome = welcome
+            .tls_serialize_detached()
+            .map_err(OpenMlsError::TlsSerialization)?;
+        let group_info = group_info
+            .map(|info| {
+                info.tls_serialize_detached()
+                    .map_err(OpenMlsError::TlsSerialization)
+            })
+            .transpose()?;
+        group
+            .merge_pending_commit(&self.provider)
+            .map_err(|error| OpenMlsError::CommitMerge(error.to_string()))?;
+        Ok(OpenMlsWelcomeBundle {
+            commit,
+            welcome,
+            group_info,
+        })
     }
 
     pub fn join_group(&self, welcome_bytes: &[u8]) -> Result<Vec<u8>, OpenMlsError> {
-        let _operation = self.operation_lock.lock().map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
         let mut serialized = welcome_bytes;
         let message = MlsMessageIn::tls_deserialize(&mut serialized)
             .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
-        if !serialized.is_empty() { return Err(OpenMlsError::TrailingProtocolMaterial); }
+        if !serialized.is_empty() {
+            return Err(OpenMlsError::TrailingProtocolMaterial);
+        }
         let welcome = match message.extract() {
             MlsMessageBodyIn::Welcome(welcome) => welcome,
             _ => return Err(OpenMlsError::ExpectedWelcome),
         };
         let staged = openmls::prelude::StagedWelcome::new_from_welcome(
-            &self.provider, &MlsGroupJoinConfig::builder().use_ratchet_tree_extension(true).build(), welcome, None,
-        ).map_err(|error| OpenMlsError::WelcomeProcessing(error.to_string()))?;
-        let group = staged.into_group(&self.provider).map_err(|error| OpenMlsError::WelcomeProcessing(error.to_string()))?;
+            &self.provider,
+            &MlsGroupJoinConfig::builder()
+                .use_ratchet_tree_extension(true)
+                .build(),
+            welcome,
+            None,
+        )
+        .map_err(|error| OpenMlsError::WelcomeProcessing(error.to_string()))?;
+        let group = staged
+            .into_group(&self.provider)
+            .map_err(|error| OpenMlsError::WelcomeProcessing(error.to_string()))?;
         Ok(group.group_id().to_vec())
     }
 
@@ -260,16 +349,24 @@ impl NativeMlsEngine {
         conversation_id: impl AsRef<str>,
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, OpenMlsError> {
-        let _operation = self.operation_lock.lock().map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
         let group_id = group_id_from_conversation_id(conversation_id)?;
-        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?.ok_or(OpenMlsError::GroupNotFound)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?
+            .ok_or(OpenMlsError::GroupNotFound)?;
         let mut serialized = ciphertext;
         let message = MlsMessageIn::tls_deserialize(&mut serialized)
             .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
-        if !serialized.is_empty() { return Err(OpenMlsError::TrailingProtocolMaterial); }
-        let protocol_message = message.try_into_protocol_message()
+        if !serialized.is_empty() {
+            return Err(OpenMlsError::TrailingProtocolMaterial);
+        }
+        let protocol_message = message
+            .try_into_protocol_message()
             .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
-        let processed = group.process_message(&self.provider, protocol_message)
+        let processed = group
+            .process_message(&self.provider, protocol_message)
             .map_err(|error| OpenMlsError::ApplicationMessageProcessing(error.to_string()))?;
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(message) => Ok(message.into_bytes()),
@@ -277,11 +374,106 @@ impl NativeMlsEngine {
         }
     }
 
-    pub fn remove_local_group(&self, conversation_id: impl AsRef<str>) -> Result<(), OpenMlsError> {
-        let _operation = self.operation_lock.lock().map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+    /// Applies authenticated MLS handshake material from the delivery service.
+    ///
+    /// Standalone proposals are persisted only after OpenMLS validates them.
+    /// Commits are likewise merged only after OpenMLS returns a staged commit.
+    /// Application messages must continue through `decrypt_application_message`.
+    pub fn apply_handshake_message(
+        &self,
+        conversation_id: impl AsRef<str>,
+        handshake_message: &[u8],
+    ) -> Result<OpenMlsHandshakeResult, OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
         let group_id = group_id_from_conversation_id(conversation_id)?;
-        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?.ok_or(OpenMlsError::GroupNotFound)?;
-        group.delete(self.provider.storage()).map_err(|error| OpenMlsError::GroupDeletion(error.to_string()))
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?
+            .ok_or(OpenMlsError::GroupNotFound)?;
+        let protocol_message = protocol_message_from_tls(handshake_message)?;
+        let processed = group
+            .process_message(&self.provider, protocol_message)
+            .map_err(|error| OpenMlsError::HandshakeMessageProcessing(error.to_string()))?;
+        match processed.into_content() {
+            ProcessedMessageContent::ProposalMessage(proposal) => {
+                group
+                    .store_pending_proposal(self.provider.storage(), *proposal)
+                    .map_err(|error| OpenMlsError::ProposalStorage(error.to_string()))?;
+                Ok(OpenMlsHandshakeResult::ProposalStored {
+                    epoch: group.epoch().as_u64(),
+                })
+            }
+            ProcessedMessageContent::StagedCommitMessage(commit) => {
+                group
+                    .merge_staged_commit(&self.provider, *commit)
+                    .map_err(|error| OpenMlsError::CommitMerge(error.to_string()))?;
+                Ok(OpenMlsHandshakeResult::CommitMerged {
+                    epoch: group.epoch().as_u64(),
+                })
+            }
+            _ => Err(OpenMlsError::ExpectedHandshakeMessage),
+        }
+    }
+
+    /// Creates and merges a Commit covering the locally persisted proposal queue.
+    ///
+    /// The caller may transmit only the returned public MLS bytes. Any proposal
+    /// store state, epoch secret, or staged commit remains in native SQLite.
+    pub fn commit_pending_proposals(
+        &self,
+        conversation_id: impl AsRef<str>,
+    ) -> Result<OpenMlsCommitBundle, OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let group_id = group_id_from_conversation_id(conversation_id)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?
+            .ok_or(OpenMlsError::GroupNotFound)?;
+        let identity = self.require_device_identity()?;
+        let signer = self.provider.read_device_signer(&identity)?;
+        let (commit, welcome, group_info) = group
+            .commit_to_pending_proposals(&self.provider, &signer)
+            .map_err(|error| OpenMlsError::CommitCreation(error.to_string()))?;
+        let commit = commit
+            .tls_serialize_detached()
+            .map_err(OpenMlsError::TlsSerialization)?;
+        let welcome = welcome
+            .map(|message| {
+                message
+                    .tls_serialize_detached()
+                    .map_err(OpenMlsError::TlsSerialization)
+            })
+            .transpose()?;
+        let group_info = group_info
+            .map(|info| {
+                info.tls_serialize_detached()
+                    .map_err(OpenMlsError::TlsSerialization)
+            })
+            .transpose()?;
+        group
+            .merge_pending_commit(&self.provider)
+            .map_err(|error| OpenMlsError::CommitMerge(error.to_string()))?;
+        Ok(OpenMlsCommitBundle {
+            commit,
+            welcome,
+            group_info,
+            epoch: group.epoch().as_u64(),
+        })
+    }
+
+    pub fn remove_local_group(&self, conversation_id: impl AsRef<str>) -> Result<(), OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let group_id = group_id_from_conversation_id(conversation_id)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?
+            .ok_or(OpenMlsError::GroupNotFound)?;
+        group
+            .delete(self.provider.storage())
+            .map_err(|error| OpenMlsError::GroupDeletion(error.to_string()))
     }
 
     pub fn generate_key_packages(
@@ -489,6 +681,20 @@ impl NativeMlsProvider {
     }
 }
 
+fn protocol_message_from_tls(
+    serialized_message: &[u8],
+) -> Result<openmls::prelude::ProtocolMessage, OpenMlsError> {
+    let mut serialized = serialized_message;
+    let message = MlsMessageIn::tls_deserialize(&mut serialized)
+        .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
+    if !serialized.is_empty() {
+        return Err(OpenMlsError::TrailingProtocolMaterial);
+    }
+    message
+        .try_into_protocol_message()
+        .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))
+}
+
 fn group_id_from_conversation_id(
     conversation_id: impl AsRef<str>,
 ) -> Result<GroupId, OpenMlsError> {
@@ -641,6 +847,14 @@ pub enum OpenMlsError {
     ApplicationMessageProcessing(String),
     #[error("expected an MLS application message")]
     ExpectedApplicationMessage,
+    #[error("failed to process MLS handshake message: {0}")]
+    HandshakeMessageProcessing(String),
+    #[error("expected an MLS Proposal or Commit message")]
+    ExpectedHandshakeMessage,
+    #[error("failed to persist an MLS Proposal: {0}")]
+    ProposalStorage(String),
+    #[error("failed to create an MLS Commit: {0}")]
+    CommitCreation(String),
     #[error("failed to delete local MLS group: {0}")]
     GroupDeletion(String),
     #[error("failed to create OpenMLS KeyPackage: {0}")]
@@ -1045,15 +1259,103 @@ mod tests {
     }
 
     #[test]
+    fn persists_remote_proposals_and_merges_their_commit() {
+        let creator_dir = TempDir::new().expect("creator support directory");
+        let joiner_dir = TempDir::new().expect("joiner support directory");
+        let creator_path = PrivateStatePath::from_app_support_dir(creator_dir.path())
+            .expect("creator directory is absolute");
+        let joiner_path = PrivateStatePath::from_app_support_dir(joiner_dir.path())
+            .expect("joiner directory is absolute");
+        let conversation_id = "conversation-handshake";
+
+        let creator = NativeMlsEngine::open(&creator_path).expect("creator opens");
+        creator
+            .initialize_device("device-creator")
+            .expect("creator initializes");
+        creator
+            .create_group(conversation_id)
+            .expect("creator group creates");
+
+        let joiner = NativeMlsEngine::open(&joiner_path).expect("joiner opens");
+        joiner
+            .initialize_device("device-joiner")
+            .expect("joiner initializes");
+        let now = unix_timestamp().expect("clock is valid");
+        let key_package = joiner
+            .generate_key_packages(1, now + 3600)
+            .expect("joiner key package generates")
+            .pop()
+            .expect("one key package exists");
+        let welcome = creator
+            .add_member(conversation_id, key_package.key_package())
+            .expect("creator adds joiner");
+        joiner
+            .join_group(welcome.welcome())
+            .expect("joiner consumes welcome");
+
+        let leave_proposal = {
+            let group_id = group_id_from_conversation_id(conversation_id).expect("group id");
+            let mut group = MlsGroup::load(joiner.provider.storage(), &group_id)
+                .expect("group loads")
+                .expect("group exists");
+            let identity = joiner.require_device_identity().expect("joiner identity");
+            let signer = joiner
+                .provider
+                .read_device_signer(&identity)
+                .expect("joiner signer");
+            group
+                .leave_group(&joiner.provider, &signer)
+                .expect("leave proposal creates")
+                .tls_serialize_detached()
+                .expect("proposal serializes")
+        };
+
+        assert_eq!(
+            creator
+                .apply_handshake_message(conversation_id, &leave_proposal)
+                .expect("creator stores proposal"),
+            OpenMlsHandshakeResult::ProposalStored { epoch: 1 }
+        );
+        let commit = creator
+            .commit_pending_proposals(conversation_id)
+            .expect("creator commits proposal");
+        assert_eq!(commit.epoch(), 2);
+        assert!(!commit.commit().is_empty());
+        assert_eq!(
+            joiner
+                .apply_handshake_message(conversation_id, commit.commit())
+                .expect("joiner merges commit"),
+            OpenMlsHandshakeResult::CommitMerged { epoch: 2 }
+        );
+        assert!(matches!(
+            joiner.encrypt_application_message(conversation_id, b"after removal"),
+            Err(OpenMlsError::ApplicationMessageCreation(_))
+        ));
+    }
+
+    #[test]
     fn removes_local_group_state_and_rejects_follow_up_operations() {
         let support_dir = TempDir::new().expect("temporary support directory");
-        let state_path = PrivateStatePath::from_app_support_dir(support_dir.path()).expect("state path");
+        let state_path =
+            PrivateStatePath::from_app_support_dir(support_dir.path()).expect("state path");
         let engine = NativeMlsEngine::open(&state_path).expect("engine opens");
-        engine.initialize_device("device-delete").expect("identity initializes");
-        engine.create_group("conversation-delete").expect("group creates");
-        engine.remove_local_group("conversation-delete").expect("group deletes");
-        assert!(matches!(engine.encrypt_application_message("conversation-delete", b"payload"), Err(OpenMlsError::GroupNotFound)));
-        assert!(matches!(engine.remove_local_group("conversation-delete"), Err(OpenMlsError::GroupNotFound)));
+        engine
+            .initialize_device("device-delete")
+            .expect("identity initializes");
+        engine
+            .create_group("conversation-delete")
+            .expect("group creates");
+        engine
+            .remove_local_group("conversation-delete")
+            .expect("group deletes");
+        assert!(matches!(
+            engine.encrypt_application_message("conversation-delete", b"payload"),
+            Err(OpenMlsError::GroupNotFound)
+        ));
+        assert!(matches!(
+            engine.remove_local_group("conversation-delete"),
+            Err(OpenMlsError::GroupNotFound)
+        ));
     }
 
     #[test]

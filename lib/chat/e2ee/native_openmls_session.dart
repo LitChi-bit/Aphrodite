@@ -148,6 +148,43 @@ final class NativeOpenMlsSession {
         return _decodeHex(_requireString(data, 'plaintext'));
       });
 
+  Future<NativeOpenMlsHandshakeResult> applyHandshakeMessage({
+    required String conversationId,
+    required List<int> handshake,
+  }) =>
+      _serialized(() {
+        final response = _readAndRelease(
+          _bindings.applyHandshakeMessage(
+            _requireHandle(),
+            conversationId,
+            handshake,
+          ),
+        );
+        final data = _requireData(response, 'apply_handshake_message');
+        return NativeOpenMlsHandshakeResult(
+          kind: _requireString(data, 'kind'),
+          epoch: _requireInt(data, 'epoch'),
+        );
+      });
+
+  Future<NativeOpenMlsCommitBundle> commitPendingProposals({
+    required String conversationId,
+  }) =>
+      _serialized(() {
+        final response = _readAndRelease(
+          _bindings.commitPendingProposals(_requireHandle(), conversationId),
+        );
+        final data = _requireData(response, 'commit_pending_proposals');
+        final welcome = data['welcome'];
+        final groupInfo = data['group_info'];
+        return NativeOpenMlsCommitBundle(
+          commit: _decodeHex(_requireString(data, 'commit')),
+          welcome: welcome is String ? _decodeHex(welcome) : null,
+          groupInfo: groupInfo is String ? _decodeHex(groupInfo) : null,
+          epoch: _requireInt(data, 'epoch'),
+        );
+      });
+
   Future<void> removeLocalGroup({
     required String conversationId,
   }) =>
@@ -228,6 +265,32 @@ final class NativeOpenMlsSession {
       '$operation failed: ${message is String ? message : 'unknown native error'}',
     );
   }
+}
+
+class NativeOpenMlsHandshakeResult {
+  const NativeOpenMlsHandshakeResult({
+    required this.kind,
+    required this.epoch,
+  });
+
+  final String kind;
+  final int epoch;
+}
+
+class NativeOpenMlsCommitBundle {
+  NativeOpenMlsCommitBundle({
+    required List<int> commit,
+    required List<int>? welcome,
+    required List<int>? groupInfo,
+    required this.epoch,
+  })  : commit = List.unmodifiable(commit),
+        welcome = welcome == null ? null : List.unmodifiable(welcome),
+        groupInfo = groupInfo == null ? null : List.unmodifiable(groupInfo);
+
+  final List<int> commit;
+  final List<int>? welcome;
+  final List<int>? groupInfo;
+  final int epoch;
 }
 
 class OpenMlsWelcomeBundle {

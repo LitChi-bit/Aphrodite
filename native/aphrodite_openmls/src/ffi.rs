@@ -6,7 +6,10 @@ use std::{
 
 use serde::Serialize;
 
-use crate::{NativeMlsEngine, OpenMlsError, OpenMlsKeyPackage, PrivateStatePath};
+use crate::{
+    NativeMlsEngine, OpenMlsCommitBundle, OpenMlsError, OpenMlsHandshakeResult, OpenMlsKeyPackage,
+    PrivateStatePath,
+};
 
 const ABI_VERSION: u32 = 1;
 
@@ -72,6 +75,20 @@ struct WelcomeResponse {
 #[derive(Debug, Serialize)]
 struct PlaintextResponse {
     plaintext: String,
+}
+
+#[derive(Debug, Serialize)]
+struct HandshakeResponse {
+    kind: &'static str,
+    epoch: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct CommitResponse {
+    commit: String,
+    welcome: Option<String>,
+    group_info: Option<String>,
+    epoch: u64,
 }
 
 /// Opens the native OpenMLS engine using an absolute app-support directory.
@@ -263,13 +280,35 @@ pub unsafe extern "C" fn aphrodite_openmls_add_member(
     key_package_len: usize,
 ) -> AphroditeOpenMlsBuffer {
     catch_buffer(|| {
-        let Some(engine) = handle_ref(handle) else { return response_buffer(error_response::<()>("invalid_handle", "handle is null")); };
-        let Some(conversation_id) = read_c_string(conversation_id) else { return response_buffer(error_response::<()>("invalid_argument", "conversation_id must be valid UTF-8")); };
-        if key_package.is_null() && key_package_len > 0 { return response_buffer(error_response::<()>("invalid_argument", "key_package must not be null when key_package_len is nonzero")); }
-        let bytes = if key_package_len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(key_package, key_package_len) } };
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        let Some(conversation_id) = read_c_string(conversation_id) else {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "conversation_id must be valid UTF-8",
+            ));
+        };
+        if key_package.is_null() && key_package_len > 0 {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "key_package must not be null when key_package_len is nonzero",
+            ));
+        }
+        let bytes = if key_package_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(key_package, key_package_len) }
+        };
         match engine.add_member(conversation_id, bytes) {
-            Ok(bundle) => response_buffer(success_response(WelcomeResponse { commit: encode_bytes(bundle.commit()), welcome: encode_bytes(bundle.welcome()), group_info: bundle.group_info().map(encode_bytes) })),
-            Err(error) => response_buffer(error_response::<()>(error_code(&error), &error.to_string())),
+            Ok(bundle) => response_buffer(success_response(WelcomeResponse {
+                commit: encode_bytes(bundle.commit()),
+                welcome: encode_bytes(bundle.welcome()),
+                group_info: bundle.group_info().map(encode_bytes),
+            })),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
         }
     })
 }
@@ -285,12 +324,27 @@ pub unsafe extern "C" fn aphrodite_openmls_join_group(
     welcome_len: usize,
 ) -> AphroditeOpenMlsBuffer {
     catch_buffer(|| {
-        let Some(engine) = handle_ref(handle) else { return response_buffer(error_response::<()>("invalid_handle", "handle is null")); };
-        if welcome.is_null() && welcome_len > 0 { return response_buffer(error_response::<()>("invalid_argument", "welcome must not be null when welcome_len is nonzero")); }
-        let bytes = if welcome_len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(welcome, welcome_len) } };
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        if welcome.is_null() && welcome_len > 0 {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "welcome must not be null when welcome_len is nonzero",
+            ));
+        }
+        let bytes = if welcome_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(welcome, welcome_len) }
+        };
         match engine.join_group(bytes) {
-            Ok(group_id) => response_buffer(success_response(GroupResponse { group_id: encode_bytes(&group_id) })),
-            Err(error) => response_buffer(error_response::<()>(error_code(&error), &error.to_string())),
+            Ok(group_id) => response_buffer(success_response(GroupResponse {
+                group_id: encode_bytes(&group_id),
+            })),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
         }
     })
 }
@@ -307,13 +361,103 @@ pub unsafe extern "C" fn aphrodite_openmls_decrypt_application_message(
     ciphertext_len: usize,
 ) -> AphroditeOpenMlsBuffer {
     catch_buffer(|| {
-        let Some(engine) = handle_ref(handle) else { return response_buffer(error_response::<()>("invalid_handle", "handle is null")); };
-        let Some(conversation_id) = read_c_string(conversation_id) else { return response_buffer(error_response::<()>("invalid_argument", "conversation_id must be valid UTF-8")); };
-        if ciphertext.is_null() && ciphertext_len > 0 { return response_buffer(error_response::<()>("invalid_argument", "ciphertext must not be null when ciphertext_len is nonzero")); }
-        let bytes = if ciphertext_len == 0 { &[] } else { unsafe { std::slice::from_raw_parts(ciphertext, ciphertext_len) } };
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        let Some(conversation_id) = read_c_string(conversation_id) else {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "conversation_id must be valid UTF-8",
+            ));
+        };
+        if ciphertext.is_null() && ciphertext_len > 0 {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "ciphertext must not be null when ciphertext_len is nonzero",
+            ));
+        }
+        let bytes = if ciphertext_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(ciphertext, ciphertext_len) }
+        };
         match engine.decrypt_application_message(conversation_id, bytes) {
-            Ok(plaintext) => response_buffer(success_response(PlaintextResponse { plaintext: encode_bytes(&plaintext) })),
-            Err(error) => response_buffer(error_response::<()>(error_code(&error), &error.to_string())),
+            Ok(plaintext) => response_buffer(success_response(PlaintextResponse {
+                plaintext: encode_bytes(&plaintext),
+            })),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
+        }
+    })
+}
+
+/// Applies a TLS-serialized MLS Proposal or Commit to local persisted state.
+///
+/// # Safety
+/// `handle` and `conversation_id` must be valid. `handshake` must point to
+/// `handshake_len` readable bytes unless its length is zero.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_apply_handshake_message(
+    handle: *mut AphroditeOpenMlsHandle,
+    conversation_id: *const c_char,
+    handshake: *const u8,
+    handshake_len: usize,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        let Some(conversation_id) = read_c_string(conversation_id) else {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "conversation_id must be valid UTF-8",
+            ));
+        };
+        if handshake.is_null() && handshake_len > 0 {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "handshake must not be null when handshake_len is nonzero",
+            ));
+        }
+        let handshake = if handshake_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(handshake, handshake_len) }
+        };
+        match engine.apply_handshake_message(conversation_id, handshake) {
+            Ok(result) => response_buffer(success_response(handshake_response(result))),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
+        }
+    })
+}
+
+/// Creates, merges, and returns a Commit covering locally persisted proposals.
+///
+/// # Safety
+/// `handle` must be live and `conversation_id` must be a valid UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_commit_pending_proposals(
+    handle: *mut AphroditeOpenMlsHandle,
+    conversation_id: *const c_char,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        let Some(conversation_id) = read_c_string(conversation_id) else {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "conversation_id must be valid UTF-8",
+            ));
+        };
+        match engine.commit_pending_proposals(conversation_id) {
+            Ok(bundle) => response_buffer(success_response(commit_response(bundle))),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
         }
     })
 }
@@ -328,11 +472,20 @@ pub unsafe extern "C" fn aphrodite_openmls_remove_local_group(
     conversation_id: *const c_char,
 ) -> AphroditeOpenMlsBuffer {
     catch_buffer(|| {
-        let Some(engine) = handle_ref(handle) else { return response_buffer(error_response::<()>("invalid_handle", "handle is null")); };
-        let Some(conversation_id) = read_c_string(conversation_id) else { return response_buffer(error_response::<()>("invalid_argument", "conversation_id must be valid UTF-8")); };
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        let Some(conversation_id) = read_c_string(conversation_id) else {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "conversation_id must be valid UTF-8",
+            ));
+        };
         match engine.remove_local_group(conversation_id) {
             Ok(()) => response_buffer(success_response(())),
-            Err(error) => response_buffer(error_response::<()>(error_code(&error), &error.to_string())),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
         }
     })
 }
@@ -398,6 +551,22 @@ fn public_key_package_response(package: &OpenMlsKeyPackage) -> KeyPackageRespons
         key_package: encode_bytes(package.key_package()),
         signature: encode_bytes(package.signature()),
         expires_at: package.expires_at(),
+    }
+}
+
+fn handshake_response(result: OpenMlsHandshakeResult) -> HandshakeResponse {
+    HandshakeResponse {
+        kind: result.kind(),
+        epoch: result.epoch(),
+    }
+}
+
+fn commit_response(bundle: OpenMlsCommitBundle) -> CommitResponse {
+    CommitResponse {
+        commit: encode_bytes(bundle.commit()),
+        welcome: bundle.welcome().map(encode_bytes),
+        group_info: bundle.group_info().map(encode_bytes),
+        epoch: bundle.epoch(),
     }
 }
 

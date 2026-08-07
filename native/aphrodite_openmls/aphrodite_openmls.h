@@ -47,6 +47,14 @@ AphroditeOpenMlsBuffer aphrodite_openmls_decrypt_application_message(
     const char *conversation_id,
     const uint8_t *ciphertext,
     size_t ciphertext_len);
+AphroditeOpenMlsBuffer aphrodite_openmls_apply_handshake_message(
+    AphroditeOpenMlsHandle *handle,
+    const char *conversation_id,
+    const uint8_t *handshake,
+    size_t handshake_len);
+AphroditeOpenMlsBuffer aphrodite_openmls_commit_pending_proposals(
+    AphroditeOpenMlsHandle *handle,
+    const char *conversation_id);
 AphroditeOpenMlsBuffer aphrodite_openmls_remove_local_group(
     AphroditeOpenMlsHandle *handle,
     const char *conversation_id);
