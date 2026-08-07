@@ -148,6 +148,16 @@ final class NativeOpenMlsSession {
         return _decodeHex(_requireString(data, 'plaintext'));
       });
 
+  Future<void> removeLocalGroup({
+    required String conversationId,
+  }) =>
+      _serialized(() {
+        final response = _readAndRelease(
+          _bindings.removeLocalGroup(_requireHandle(), conversationId),
+        );
+        _requireData(response, 'remove_local_group');
+      });
+
   Future<void> close() async {
     await _operation;
     final handle = _handle;

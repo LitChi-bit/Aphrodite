@@ -51,6 +51,11 @@ abstract interface class NativeOpenMlsApi {
     List<int> ciphertext,
   );
 
+  AphroditeOpenMlsBuffer removeLocalGroup(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  );
+
   void close(ffi.Pointer<ffi.Void> handle);
 
   void freeBuffer(AphroditeOpenMlsBuffer buffer);
@@ -87,6 +92,10 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
             _DecryptApplicationMessageNative, _DecryptApplicationMessageDart>(
           'aphrodite_openmls_decrypt_application_message',
         ),
+        _removeLocalGroup = library
+            .lookupFunction<_RemoveLocalGroupNative, _RemoveLocalGroupDart>(
+          'aphrodite_openmls_remove_local_group',
+        ),
         _close = library.lookupFunction<_CloseNative, _CloseDart>(
           'aphrodite_openmls_close',
         ),
@@ -103,6 +112,7 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
   final _JoinGroupDart _joinGroup;
   final _EncryptApplicationMessageDart _encryptApplicationMessage;
   final _DecryptApplicationMessageDart _decryptApplicationMessage;
+  final _RemoveLocalGroupDart _removeLocalGroup;
   final _CloseDart _close;
   final _FreeBufferDart _freeBuffer;
 
@@ -235,6 +245,19 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
   }
 
   @override
+  AphroditeOpenMlsBuffer removeLocalGroup(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  ) {
+    final id = conversationId.toNativeUtf8();
+    try {
+      return _removeLocalGroup(handle, id.cast());
+    } finally {
+      calloc.free(id);
+    }
+  }
+
+  @override
   void close(ffi.Pointer<ffi.Void> handle) => _close(handle);
 
   @override
@@ -321,6 +344,15 @@ typedef _DecryptApplicationMessageDart = AphroditeOpenMlsBuffer Function(
   ffi.Pointer<ffi.Char>,
   ffi.Pointer<ffi.Uint8>,
   int,
+);
+
+typedef _RemoveLocalGroupNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+);
+typedef _RemoveLocalGroupDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
 );
 
 typedef _CloseNative = ffi.Void Function(ffi.Pointer<ffi.Void>);

@@ -51,7 +51,8 @@ void main() {
     expect(joined, <int>[1, 2]);
     expect(ciphertext, <int>[7, 8]);
     expect(plaintext, <int>[98, 105, 110, 97, 114, 121, 0]);
-    expect(native.releasedBuffers, 7);
+    await session.removeLocalGroup(conversationId: 'conversation-1');
+    expect(native.releasedBuffers, 8);
 
     await session.close();
     expect(native.closed, isTrue);
@@ -194,6 +195,18 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
         'abi_version': 1,
         'ok': true,
         'data': <String, dynamic>{'plaintext': '62696e61727900'},
+        'error': null,
+      });
+
+  @override
+  AphroditeOpenMlsBuffer removeLocalGroup(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  ) =>
+      _jsonBuffer(<String, dynamic>{
+        'abi_version': 1,
+        'ok': true,
+        'data': <String, dynamic>{},
         'error': null,
       });
 
