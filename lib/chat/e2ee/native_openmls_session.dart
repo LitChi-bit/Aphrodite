@@ -195,6 +195,13 @@ final class NativeOpenMlsSession {
         _requireData(response, 'remove_local_group');
       });
 
+  Future<void> destroyDeviceState() => _serialized(() {
+        final response = _readAndRelease(
+          _bindings.destroyDeviceState(_requireHandle()),
+        );
+        _requireData(response, 'destroy_device_state');
+      });
+
   Future<void> close() async {
     await _operation;
     final handle = _handle;

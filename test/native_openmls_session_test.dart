@@ -65,7 +65,8 @@ void main() {
     expect(commit.groupInfo, <int>[17]);
     expect(commit.epoch, 2);
     await session.removeLocalGroup(conversationId: 'conversation-1');
-    expect(native.releasedBuffers, 10);
+    await session.destroyDeviceState();
+    expect(native.releasedBuffers, 11);
 
     await session.close();
     expect(native.closed, isTrue);
@@ -245,6 +246,17 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
   AphroditeOpenMlsBuffer removeLocalGroup(
     ffi.Pointer<ffi.Void> handle,
     String conversationId,
+  ) =>
+      _jsonBuffer(<String, dynamic>{
+        'abi_version': 1,
+        'ok': true,
+        'data': <String, dynamic>{},
+        'error': null,
+      });
+
+  @override
+  AphroditeOpenMlsBuffer destroyDeviceState(
+    ffi.Pointer<ffi.Void> handle,
   ) =>
       _jsonBuffer(<String, dynamic>{
         'abi_version': 1,

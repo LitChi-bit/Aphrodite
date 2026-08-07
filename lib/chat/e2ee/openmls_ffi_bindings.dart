@@ -67,6 +67,10 @@ abstract interface class NativeOpenMlsApi {
     String conversationId,
   );
 
+  AphroditeOpenMlsBuffer destroyDeviceState(
+    ffi.Pointer<ffi.Void> handle,
+  );
+
   void close(ffi.Pointer<ffi.Void> handle);
 
   void freeBuffer(AphroditeOpenMlsBuffer buffer);
@@ -115,6 +119,10 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
             .lookupFunction<_RemoveLocalGroupNative, _RemoveLocalGroupDart>(
           'aphrodite_openmls_remove_local_group',
         ),
+        _destroyDeviceState = library
+            .lookupFunction<_DestroyDeviceStateNative, _DestroyDeviceStateDart>(
+          'aphrodite_openmls_destroy_device_state',
+        ),
         _close = library.lookupFunction<_CloseNative, _CloseDart>(
           'aphrodite_openmls_close',
         ),
@@ -134,6 +142,7 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
   final _ApplyHandshakeMessageDart _applyHandshakeMessage;
   final _CommitPendingProposalsDart _commitPendingProposals;
   final _RemoveLocalGroupDart _removeLocalGroup;
+  final _DestroyDeviceStateDart _destroyDeviceState;
   final _CloseDart _close;
   final _FreeBufferDart _freeBuffer;
 
@@ -309,6 +318,12 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
   }
 
   @override
+  AphroditeOpenMlsBuffer destroyDeviceState(
+    ffi.Pointer<ffi.Void> handle,
+  ) =>
+      _destroyDeviceState(handle);
+
+  @override
   void close(ffi.Pointer<ffi.Void> handle) => _close(handle);
 
   @override
@@ -426,6 +441,13 @@ typedef _RemoveLocalGroupNative = AphroditeOpenMlsBuffer Function(
 typedef _RemoveLocalGroupDart = AphroditeOpenMlsBuffer Function(
   ffi.Pointer<ffi.Void>,
   ffi.Pointer<ffi.Char>,
+);
+
+typedef _DestroyDeviceStateNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+);
+typedef _DestroyDeviceStateDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
 );
 
 typedef _CloseNative = ffi.Void Function(ffi.Pointer<ffi.Void>);

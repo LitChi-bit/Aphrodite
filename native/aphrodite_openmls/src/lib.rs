@@ -463,6 +463,34 @@ impl NativeMlsEngine {
         })
     }
 
+    /// Destroys all private MLS state owned by this device.
+    ///
+    /// This is intentionally device-local: it does not revoke the device in the
+    /// server roster or alter any other device's state.
+    pub fn destroy_device_state(&self) -> Result<(), OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let group_ids = self.provider.local_group_ids()?;
+        for group_id in group_ids {
+            let Some(mut group) = MlsGroup::load(self.provider.storage(), &group_id)? else {
+                continue;
+            };
+            group
+                .delete(self.provider.storage())
+                .map_err(|error| OpenMlsError::GroupDeletion(error.to_string()))?;
+        }
+        self.provider
+            .clear_device_private_state()
+            .map_err(|error| OpenMlsError::DeviceStateDestruction(error.to_string()))?;
+        *self
+            .device_identity
+            .write()
+            .map_err(|_| OpenMlsError::IdentityLockPoisoned)? = None;
+        Ok(())
+    }
+
     pub fn remove_local_group(&self, conversation_id: impl AsRef<str>) -> Result<(), OpenMlsError> {
         let _operation = self
             .operation_lock
@@ -639,6 +667,37 @@ impl NativeMlsProvider {
             CIPHERSUITE.signature_algorithm(),
         )
         .ok_or(OpenMlsError::MissingSignatureKeyPair)
+    }
+
+    fn local_group_ids(&self) -> Result<Vec<GroupId>, OpenMlsError> {
+        let mut statement = self
+            .identity_index
+            .prepare("SELECT DISTINCT group_id FROM openmls_group_data")?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+            .map(|row| row.map(|bytes| GroupId::from_slice(&bytes)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
+    fn clear_device_private_state(&self) -> Result<(), OpenMlsError> {
+        // MlsGroup::delete handles valid groups through the OpenMLS API. This
+        // transaction also removes orphaned rows that cannot be loaded as a
+        // group, so device destruction does not leave private MLS material.
+        self.identity_index.execute_batch(
+            "BEGIN IMMEDIATE;
+             DELETE FROM openmls_group_data;
+             DELETE FROM openmls_epoch_keys_pairs;
+             DELETE FROM openmls_own_leaf_nodes;
+             DELETE FROM openmls_proposals;
+             DELETE FROM openmls_key_packages;
+             DELETE FROM openmls_signature_keys;
+             DELETE FROM openmls_encryption_keys;
+             DELETE FROM openmls_psks;
+             DELETE FROM aphrodite_device_identities;
+             COMMIT;",
+        )?;
+        Ok(())
     }
 
     fn read_device_identity(
@@ -857,6 +916,8 @@ pub enum OpenMlsError {
     CommitCreation(String),
     #[error("failed to delete local MLS group: {0}")]
     GroupDeletion(String),
+    #[error("failed to destroy local device MLS state: {0}")]
+    DeviceStateDestruction(String),
     #[error("failed to create OpenMLS KeyPackage: {0}")]
     KeyPackageCreation(KeyPackageNewError),
     #[error("failed to serialize public OpenMLS protocol material: {0}")]
@@ -1331,6 +1392,66 @@ mod tests {
             joiner.encrypt_application_message(conversation_id, b"after removal"),
             Err(OpenMlsError::ApplicationMessageCreation(_))
         ));
+    }
+
+    #[test]
+    fn destroys_all_local_device_state_and_requires_reinitialization() {
+        let support_dir = TempDir::new().expect("temporary support directory");
+        let state_path =
+            PrivateStatePath::from_app_support_dir(support_dir.path()).expect("state path");
+        let engine = NativeMlsEngine::open(&state_path).expect("engine opens");
+        engine
+            .initialize_device("device-destroy")
+            .expect("identity initializes");
+        let now = unix_timestamp().expect("clock is valid");
+        engine
+            .generate_key_packages(1, now + 3600)
+            .expect("key package generates");
+        engine
+            .create_group("conversation-destroy")
+            .expect("group creates");
+        engine
+            .destroy_device_state()
+            .expect("device state destroys");
+        assert!(matches!(
+            engine.generate_key_packages(1, now + 3600),
+            Err(OpenMlsError::DeviceNotInitialized)
+        ));
+        assert!(matches!(
+            engine.encrypt_application_message("conversation-destroy", b"payload"),
+            Err(OpenMlsError::GroupNotFound)
+        ));
+
+        let inspection = Connection::open(state_path.as_path()).expect("database reopens");
+        for table in [
+            "openmls_group_data",
+            "openmls_epoch_keys_pairs",
+            "openmls_own_leaf_nodes",
+            "openmls_proposals",
+            "openmls_key_packages",
+            "openmls_signature_keys",
+            "openmls_encryption_keys",
+            "openmls_psks",
+            "aphrodite_device_identities",
+        ] {
+            let count: i64 = inspection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("private state table is readable");
+            assert_eq!(count, 0, "{table} must be empty after destruction");
+        }
+
+        let reopened = NativeMlsEngine::open(&state_path).expect("provider reopens");
+        assert!(reopened.initialize_device("device-destroy").is_ok());
+        let identities: i64 = inspection
+            .query_row(
+                "SELECT COUNT(*) FROM aphrodite_device_identities",
+                [],
+                |row| row.get(0),
+            )
+            .expect("identity table is readable");
+        assert_eq!(identities, 1);
     }
 
     #[test]

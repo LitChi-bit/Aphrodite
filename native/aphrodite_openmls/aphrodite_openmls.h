@@ -58,6 +58,8 @@ AphroditeOpenMlsBuffer aphrodite_openmls_commit_pending_proposals(
 AphroditeOpenMlsBuffer aphrodite_openmls_remove_local_group(
     AphroditeOpenMlsHandle *handle,
     const char *conversation_id);
+AphroditeOpenMlsBuffer aphrodite_openmls_destroy_device_state(
+    AphroditeOpenMlsHandle *handle);
 void aphrodite_openmls_close(AphroditeOpenMlsHandle *handle);
 void aphrodite_openmls_free_buffer(AphroditeOpenMlsBuffer buffer);
 

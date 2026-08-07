@@ -462,6 +462,31 @@ pub unsafe extern "C" fn aphrodite_openmls_commit_pending_proposals(
     })
 }
 
+/// Destroys all private MLS state owned by this local device.
+///
+/// This does not alter any server roster or other device state. The handle
+/// remains open, but MLS operations require device reinitialization afterward.
+///
+/// # Safety
+/// `handle` must be null or a live handle returned by `aphrodite_openmls_open`,
+/// and it must not be closed concurrently with this call.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_destroy_device_state(
+    handle: *mut AphroditeOpenMlsHandle,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        match engine.destroy_device_state() {
+            Ok(()) => response_buffer(success_response(())),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
+        }
+    })
+}
+
 /// Removes one local MLS group and all persisted group secrets.
 ///
 /// # Safety
@@ -611,6 +636,7 @@ fn error_code(error: &OpenMlsError) -> &'static str {
         OpenMlsError::GroupAlreadyExists => "group_already_exists",
         OpenMlsError::GroupNotFound => "group_not_found",
         OpenMlsError::GroupDeletion(_) => "group_deletion_failed",
+        OpenMlsError::DeviceStateDestruction(_) => "device_state_destruction_failed",
         OpenMlsError::GroupPersistenceMissing => "group_persistence_missing",
         OpenMlsError::EmptyApplicationMessage => "empty_application_message",
         OpenMlsError::DeviceNotInitialized => "device_not_initialized",
@@ -703,6 +729,37 @@ mod tests {
         assert!(ciphertext_json.contains("ciphertext"));
         unsafe {
             aphrodite_openmls_free_buffer(ciphertext);
+            aphrodite_openmls_close(handle);
+        }
+    }
+
+    #[test]
+    fn destroys_device_state_and_requires_reinitialization() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let directory =
+            CString::new(directory.path().to_str().expect("UTF-8 path")).expect("CString");
+        let handle = unsafe { aphrodite_openmls_open(directory.as_ptr()) };
+        assert!(!handle.is_null());
+        let device = CString::new("device-ffi-destroy").expect("CString");
+        let identity = unsafe { aphrodite_openmls_initialize_device(handle, device.as_ptr()) };
+        unsafe { aphrodite_openmls_free_buffer(identity) };
+
+        let destroyed = unsafe { aphrodite_openmls_destroy_device_state(handle) };
+        let destroyed_json = read_buffer(&destroyed);
+        assert!(destroyed_json.contains("\"ok\":true"));
+        unsafe { aphrodite_openmls_free_buffer(destroyed) };
+
+        let packages = unsafe {
+            aphrodite_openmls_generate_key_packages(
+                handle,
+                1,
+                crate::unix_timestamp().expect("clock") + 3600,
+            )
+        };
+        let packages_json = read_buffer(&packages);
+        assert!(packages_json.contains("\"code\":\"device_not_initialized\""));
+        unsafe {
+            aphrodite_openmls_free_buffer(packages);
             aphrodite_openmls_close(handle);
         }
     }
