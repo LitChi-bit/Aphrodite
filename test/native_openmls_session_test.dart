@@ -39,6 +39,10 @@ void main() {
       conversationId: 'conversation-1',
       leafIndex: 1,
     );
+    final addProposal = await session.proposeAddMember(
+      conversationId: 'conversation-1',
+      keyPackage: <int>[20, 21],
+    );
     final encrypted = await session.encryptApplicationMessage(
       conversationId: 'conversation-1',
       plaintext: <int>[98, 105, 110, 97, 114, 121, 0],
@@ -65,6 +69,7 @@ void main() {
     expect(welcome.groupInfo, isNull);
     expect(joined, 'conversation-1'.codeUnits);
     expect(proposal, <int>[18, 19]);
+    expect(addProposal, <int>[20, 21]);
     expect(encrypted.ciphertext, <int>[7, 8]);
     expect(encrypted.scheme, nativeOpenMlsCiphersuite);
     expect(encrypted.groupId, 'conversation-1'.codeUnits);
@@ -84,7 +89,7 @@ void main() {
     expect(commit.epoch, 2);
     await session.removeLocalGroup(conversationId: 'conversation-1');
     await session.destroyDeviceState();
-    expect(native.releasedBuffers, 13);
+    expect(native.releasedBuffers, 14);
 
     await session.close();
     expect(native.closed, isTrue);
@@ -187,6 +192,19 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
         'abi_version': 1,
         'ok': true,
         'data': <String, dynamic>{'proposal': '1213'},
+        'error': null,
+      });
+
+  @override
+  AphroditeOpenMlsBuffer proposeAddMember(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> keyPackage,
+  ) =>
+      _jsonBuffer(<String, dynamic>{
+        'abi_version': 1,
+        'ok': true,
+        'data': <String, dynamic>{'proposal': '1415'},
         'error': null,
       });
 

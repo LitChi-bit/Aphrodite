@@ -32,6 +32,11 @@ AphroditeOpenMlsBuffer aphrodite_openmls_propose_remove_member(
     AphroditeOpenMlsHandle *handle,
     const char *conversation_id,
     uint32_t leaf_index);
+AphroditeOpenMlsBuffer aphrodite_openmls_propose_add_member(
+    AphroditeOpenMlsHandle *handle,
+    const char *conversation_id,
+    const uint8_t *key_package,
+    size_t key_package_len);
 AphroditeOpenMlsBuffer aphrodite_openmls_encrypt_application_message(
     AphroditeOpenMlsHandle *handle,
     const char *conversation_id,

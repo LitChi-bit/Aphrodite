@@ -34,6 +34,12 @@ abstract interface class NativeOpenMlsApi {
     int leafIndex,
   );
 
+  AphroditeOpenMlsBuffer proposeAddMember(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> keyPackage,
+  );
+
   AphroditeOpenMlsBuffer addMember(
     ffi.Pointer<ffi.Void> handle,
     String conversationId,
@@ -103,6 +109,10 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
             _ProposeRemoveMemberNative, _ProposeRemoveMemberDart>(
           'aphrodite_openmls_propose_remove_member',
         ),
+        _proposeAddMember = library
+            .lookupFunction<_ProposeAddMemberNative, _ProposeAddMemberDart>(
+          'aphrodite_openmls_propose_add_member',
+        ),
         _addMember = library.lookupFunction<_AddMemberNative, _AddMemberDart>(
           'aphrodite_openmls_add_member',
         ),
@@ -146,6 +156,7 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
   final _GenerateDart _generateKeyPackages;
   final _CreateGroupDart _createGroup;
   final _ProposeRemoveMemberDart _proposeRemoveMember;
+  final _ProposeAddMemberDart _proposeAddMember;
   final _AddMemberDart _addMember;
   final _JoinGroupDart _joinGroup;
   final _EncryptApplicationMessageDart _encryptApplicationMessage;
@@ -212,6 +223,23 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
       return _proposeRemoveMember(handle, id.cast(), leafIndex);
     } finally {
       calloc.free(id);
+    }
+  }
+
+  @override
+  AphroditeOpenMlsBuffer proposeAddMember(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    List<int> keyPackage,
+  ) {
+    final id = conversationId.toNativeUtf8();
+    final bytes = calloc<ffi.Uint8>(keyPackage.length);
+    bytes.asTypedList(keyPackage.length).setAll(0, keyPackage);
+    try {
+      return _proposeAddMember(handle, id.cast(), bytes, keyPackage.length);
+    } finally {
+      calloc.free(id);
+      calloc.free(bytes);
     }
   }
 
@@ -395,6 +423,19 @@ typedef _ProposeRemoveMemberNative = AphroditeOpenMlsBuffer Function(
 typedef _ProposeRemoveMemberDart = AphroditeOpenMlsBuffer Function(
   ffi.Pointer<ffi.Void>,
   ffi.Pointer<ffi.Char>,
+  int,
+);
+
+typedef _ProposeAddMemberNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.UintPtr,
+);
+typedef _ProposeAddMemberDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
   int,
 );
 

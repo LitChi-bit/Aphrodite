@@ -337,6 +337,36 @@ impl NativeMlsEngine {
             .map_err(OpenMlsError::TlsSerialization)
     }
 
+    pub fn propose_add_member(
+        &self,
+        conversation_id: impl AsRef<str>,
+        key_package_bytes: &[u8],
+    ) -> Result<Vec<u8>, OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let group_id = group_id_from_conversation_id(conversation_id)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?
+            .ok_or(OpenMlsError::GroupNotFound)?;
+        let mut serialized = key_package_bytes;
+        let key_package = KeyPackageIn::tls_deserialize(&mut serialized)
+            .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?
+            .validate(self.provider.crypto(), Default::default())
+            .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?;
+        if !serialized.is_empty() {
+            return Err(OpenMlsError::TrailingProtocolMaterial);
+        }
+        let identity = self.require_device_identity()?;
+        let signer = self.provider.read_device_signer(&identity)?;
+        let (proposal, _) = group
+            .propose_add_member(&self.provider, &signer, &key_package)
+            .map_err(|error| OpenMlsError::ProposalCreation(error.to_string()))?;
+        proposal
+            .tls_serialize_detached()
+            .map_err(OpenMlsError::TlsSerialization)
+    }
+
     pub fn add_member(
         &self,
         conversation_id: impl AsRef<str>,
@@ -1340,10 +1370,13 @@ mod tests {
     fn completes_two_device_welcome_commit_and_message_round_trip() {
         let creator_dir = TempDir::new().expect("creator support directory");
         let joiner_dir = TempDir::new().expect("joiner support directory");
+        let proposer_dir = TempDir::new().expect("proposer support directory");
         let creator_path = PrivateStatePath::from_app_support_dir(creator_dir.path())
             .expect("creator directory is absolute");
         let joiner_path = PrivateStatePath::from_app_support_dir(joiner_dir.path())
             .expect("joiner directory is absolute");
+        let proposer_path = PrivateStatePath::from_app_support_dir(proposer_dir.path())
+            .expect("proposer directory is absolute");
         let conversation_id = "conversation-two-device";
 
         let creator = NativeMlsEngine::open(&creator_path).expect("creator opens");
@@ -1358,12 +1391,21 @@ mod tests {
         joiner
             .initialize_device("device-joiner")
             .expect("joiner initializes");
+        let proposer = NativeMlsEngine::open(&proposer_path).expect("proposer opens");
+        proposer
+            .initialize_device("device-proposer")
+            .expect("proposer initializes");
         let now = unix_timestamp().expect("clock is valid");
         let key_package = joiner
             .generate_key_packages(1, now + 3600)
             .expect("joiner key package generates")
             .pop()
             .expect("one key package exists");
+        let proposal_key_package = proposer
+            .generate_key_packages(1, now + 3600)
+            .expect("proposer key package generates")
+            .pop()
+            .expect("one proposal key package exists");
 
         let bundle = creator
             .add_member(conversation_id, key_package.key_package())
@@ -1393,6 +1435,25 @@ mod tests {
             .expect("creator decrypts");
         assert_eq!(response_plaintext, b"hello from joiner");
 
+        let add_proposal = creator
+            .propose_add_member(conversation_id, proposal_key_package.key_package())
+            .expect("creator creates a signed add proposal");
+        assert!(!add_proposal.is_empty());
+        let add_proposal_result = joiner
+            .apply_handshake_message(conversation_id, &add_proposal)
+            .expect("joiner validates and stores add proposal");
+        assert_eq!(add_proposal_result.kind(), "proposal_stored");
+
+        let add_commit = creator
+            .commit_pending_proposals(conversation_id)
+            .expect("creator commits the pending add proposal");
+        assert_eq!(add_commit.epoch(), 2);
+        let add_commit_result = joiner
+            .apply_handshake_message(conversation_id, add_commit.commit())
+            .expect("joiner validates and merges add commit");
+        assert_eq!(add_commit_result.kind(), "commit_merged");
+        assert_eq!(add_commit_result.epoch(), 2);
+
         let remove_proposal = creator
             .propose_remove_member(conversation_id, 1)
             .expect("creator creates a signed remove proposal");
@@ -1405,12 +1466,12 @@ mod tests {
         let remove_commit = creator
             .commit_pending_proposals(conversation_id)
             .expect("creator commits the pending remove proposal");
-        assert_eq!(remove_commit.epoch(), 2);
+        assert_eq!(remove_commit.epoch(), 3);
         let commit_result = joiner
             .apply_handshake_message(conversation_id, remove_commit.commit())
             .expect("joiner validates and merges remove commit");
         assert_eq!(commit_result.kind(), "commit_merged");
-        assert_eq!(commit_result.epoch(), 2);
+        assert_eq!(commit_result.epoch(), 3);
     }
 
     #[test]

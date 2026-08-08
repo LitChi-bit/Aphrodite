@@ -308,6 +308,50 @@ pub unsafe extern "C" fn aphrodite_openmls_propose_remove_member(
     })
 }
 
+/// Creates and persists a signed MLS Add proposal from a public TLS KeyPackage.
+///
+/// # Safety
+/// `handle` and `conversation_id` follow the same rules as the group creation
+/// entry point. `key_package` must point to `key_package_len` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_propose_add_member(
+    handle: *mut AphroditeOpenMlsHandle,
+    conversation_id: *const c_char,
+    key_package: *const u8,
+    key_package_len: usize,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        let Some(conversation_id) = read_c_string(conversation_id) else {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "conversation_id must be valid UTF-8",
+            ));
+        };
+        if key_package.is_null() && key_package_len > 0 {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "key_package must not be null when key_package_len is nonzero",
+            ));
+        }
+        let bytes = if key_package_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(key_package, key_package_len) }
+        };
+        match engine.propose_add_member(conversation_id, bytes) {
+            Ok(proposal) => response_buffer(success_response(ProposalResponse {
+                proposal: encode_bytes(&proposal),
+            })),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
+        }
+    })
+}
+
 /// Adds a member from a public TLS KeyPackage and returns Commit/Welcome material.
 ///
 /// # Safety
@@ -786,6 +830,37 @@ mod tests {
     }
 
     #[test]
+    fn creates_signed_add_proposal_json() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let directory =
+            CString::new(directory.path().to_str().expect("UTF-8 path")).expect("CString");
+        let handle = unsafe { aphrodite_openmls_open(directory.as_ptr()) };
+        assert!(!handle.is_null());
+        let device = CString::new("device-ffi-add-proposal").expect("CString");
+        let identity = unsafe { aphrodite_openmls_initialize_device(handle, device.as_ptr()) };
+        unsafe { aphrodite_openmls_free_buffer(identity) };
+        let conversation = CString::new("conversation-ffi-add-proposal").expect("CString");
+        let group = unsafe { aphrodite_openmls_create_group(handle, conversation.as_ptr()) };
+        unsafe { aphrodite_openmls_free_buffer(group) };
+        let key_package = CString::new("not-a-key-package").expect("CString");
+        let proposal = unsafe {
+            aphrodite_openmls_propose_add_member(
+                handle,
+                conversation.as_ptr(),
+                key_package.as_ptr().cast(),
+                key_package.as_bytes().len(),
+            )
+        };
+        let proposal_json = read_buffer(&proposal);
+        assert!(proposal_json.contains("\"ok\":false"));
+        assert!(proposal_json.contains("\"code\":\"native_error\""));
+        unsafe {
+            aphrodite_openmls_free_buffer(proposal);
+            aphrodite_openmls_close(handle);
+        }
+    }
+
+    #[test]
     fn creates_signed_remove_proposal_json() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let directory =
@@ -799,9 +874,8 @@ mod tests {
         let group = unsafe { aphrodite_openmls_create_group(handle, conversation.as_ptr()) };
         unsafe { aphrodite_openmls_free_buffer(group) };
 
-        let proposal = unsafe {
-            aphrodite_openmls_propose_remove_member(handle, conversation.as_ptr(), 0)
-        };
+        let proposal =
+            unsafe { aphrodite_openmls_propose_remove_member(handle, conversation.as_ptr(), 0) };
         let proposal_json = read_buffer(&proposal);
         assert!(proposal_json.contains("\"ok\":true"));
         assert!(proposal_json.contains("proposal"));

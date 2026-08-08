@@ -112,6 +112,22 @@ final class NativeOpenMlsSession implements E2eeClient {
         return _decodeHex(_requireString(data, 'proposal'));
       });
 
+  Future<List<int>> proposeAddMember({
+    required String conversationId,
+    required List<int> keyPackage,
+  }) =>
+      _serialized(() {
+        final response = _readAndRelease(
+          _bindings.proposeAddMember(
+            _requireHandle(),
+            conversationId,
+            keyPackage,
+          ),
+        );
+        final data = _requireData(response, 'propose_add_member');
+        return _decodeHex(_requireString(data, 'proposal'));
+      });
+
   Future<OpenMlsWelcomeBundle> addMember({
     required String conversationId,
     required List<int> keyPackage,
