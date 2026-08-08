@@ -124,6 +124,30 @@ void main() {
     expect(native.releasedBuffers, 1);
   });
 
+  test('rejects a Welcome with a noncanonical conversation before FFI',
+      () async {
+    final native = _FakeNativeOpenMlsApi();
+    final session = NativeOpenMlsSession(
+      bindings: native,
+      appSupportDir: r'C:\Aphrodite\state',
+    )..open();
+
+    await expectLater(
+      session.joinWelcome(
+        welcome: OpenMlsWelcome(
+          conversationId: ' conversation-1 ',
+          epoch: 1,
+          data: <int>[5, 6],
+        ),
+      ),
+      throwsA(isA<NativeOpenMlsException>()),
+    );
+    expect(native.joinGroupCalls, 0);
+    expect(native.releasedBuffers, 0);
+
+    await session.close();
+  });
+
   test('rejects mismatched group state conversation before FFI', () async {
     final native = _FakeNativeOpenMlsApi();
     final session = NativeOpenMlsSession(
@@ -157,6 +181,7 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
   var closed = false;
   var releasedBuffers = 0;
   var applyGroupStateCalls = 0;
+  var joinGroupCalls = 0;
   final _buffers = <ffi.Pointer<AphroditeOpenMlsBuffer>>[];
 
   @override
@@ -281,15 +306,17 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
   AphroditeOpenMlsBuffer joinGroup(
     ffi.Pointer<ffi.Void> handle,
     List<int> welcome,
-  ) =>
-      _jsonBuffer(<String, dynamic>{
-        'abi_version': 1,
-        'ok': true,
-        'data': <String, dynamic>{
-          'group_id': '636f6e766572736174696f6e2d31',
-        },
-        'error': null,
-      });
+  ) {
+    joinGroupCalls += 1;
+    return _jsonBuffer(<String, dynamic>{
+      'abi_version': 1,
+      'ok': true,
+      'data': <String, dynamic>{
+        'group_id': '636f6e766572736174696f6e2d31',
+      },
+      'error': null,
+    });
+  }
 
   @override
   AphroditeOpenMlsBuffer encryptApplicationMessage(

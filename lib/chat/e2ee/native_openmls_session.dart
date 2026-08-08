@@ -3,6 +3,7 @@ import 'dart:ffi' as ffi;
 import 'dart:io';
 
 import 'e2ee_client.dart';
+import 'mls_lifecycle_coordinator.dart';
 import 'openmls_client.dart';
 import 'openmls_ffi_bindings.dart';
 
@@ -13,7 +14,7 @@ const nativeOpenMlsCiphersuite = 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519';
 /// Group and message operations remain unavailable until their native ABI
 /// functions are implemented. This class deliberately does not implement
 /// [OpenMlsClient] to avoid presenting a partial MLS implementation as complete.
-final class NativeOpenMlsSession implements E2eeClient {
+final class NativeOpenMlsSession implements E2eeClient, MlsGroupNativeAdapter {
   NativeOpenMlsSession({
     required NativeOpenMlsApi bindings,
     required String appSupportDir,
@@ -42,6 +43,7 @@ final class NativeOpenMlsSession implements E2eeClient {
         );
       });
 
+  @override
   Future<List<OpenMlsKeyPackage>> generateKeyPackages({
     required int count,
     required DateTime expiresAt,
@@ -169,6 +171,24 @@ final class NativeOpenMlsSession implements E2eeClient {
         return _decodeHex(_requireString(data, 'group_id'));
       });
 
+  @override
+  Future<void> joinWelcome({
+    required OpenMlsWelcome welcome,
+  }) async {
+    if (welcome.conversationId.isEmpty ||
+        welcome.conversationId.trim() != welcome.conversationId) {
+      throw const NativeOpenMlsException(
+        'MLS Welcome conversation ID is invalid',
+      );
+    }
+    final groupId = await joinGroup(welcome: welcome.data);
+    if (!_sameBytes(groupId, welcome.conversationId.codeUnits)) {
+      throw const NativeOpenMlsException(
+        'native MLS Welcome group ID does not match conversation',
+      );
+    }
+  }
+
   Future<NativeOpenMlsApplicationMessage> encryptApplicationMessage({
     required String conversationId,
     required List<int> plaintext,
@@ -271,6 +291,7 @@ final class NativeOpenMlsSession implements E2eeClient {
         );
       });
 
+  @override
   Future<void> applyGroupState({
     required String conversationId,
     required OpenMlsGroupState state,
