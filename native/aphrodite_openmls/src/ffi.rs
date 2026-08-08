@@ -308,6 +308,36 @@ pub unsafe extern "C" fn aphrodite_openmls_propose_remove_member(
     })
 }
 
+/// Creates and persists a signed MLS Update proposal for the local leaf.
+///
+/// # Safety
+/// `handle` must be live and `conversation_id` must be a valid UTF-8 C string.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_propose_self_update(
+    handle: *mut AphroditeOpenMlsHandle,
+    conversation_id: *const c_char,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        let Some(conversation_id) = read_c_string(conversation_id) else {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "conversation_id must be valid UTF-8",
+            ));
+        };
+        match engine.propose_self_update(conversation_id) {
+            Ok(proposal) => response_buffer(success_response(ProposalResponse {
+                proposal: encode_bytes(&proposal),
+            })),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
+        }
+    })
+}
+
 /// Creates and persists a signed MLS Add proposal from a public TLS KeyPackage.
 ///
 /// # Safety
@@ -825,6 +855,31 @@ mod tests {
         assert!(ciphertext_json.contains("ciphertext"));
         unsafe {
             aphrodite_openmls_free_buffer(ciphertext);
+            aphrodite_openmls_close(handle);
+        }
+    }
+
+    #[test]
+    fn creates_signed_update_proposal_json() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let directory =
+            CString::new(directory.path().to_str().expect("UTF-8 path")).expect("CString");
+        let handle = unsafe { aphrodite_openmls_open(directory.as_ptr()) };
+        assert!(!handle.is_null());
+        let device = CString::new("device-ffi-update-proposal").expect("CString");
+        let identity = unsafe { aphrodite_openmls_initialize_device(handle, device.as_ptr()) };
+        unsafe { aphrodite_openmls_free_buffer(identity) };
+        let conversation = CString::new("conversation-ffi-update-proposal").expect("CString");
+        let group = unsafe { aphrodite_openmls_create_group(handle, conversation.as_ptr()) };
+        unsafe { aphrodite_openmls_free_buffer(group) };
+
+        let proposal =
+            unsafe { aphrodite_openmls_propose_self_update(handle, conversation.as_ptr()) };
+        let proposal_json = read_buffer(&proposal);
+        assert!(proposal_json.contains("\"ok\":true"));
+        assert!(proposal_json.contains("proposal"));
+        unsafe {
+            aphrodite_openmls_free_buffer(proposal);
             aphrodite_openmls_close(handle);
         }
     }

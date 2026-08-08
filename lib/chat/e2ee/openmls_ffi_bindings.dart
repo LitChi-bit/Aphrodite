@@ -40,6 +40,11 @@ abstract interface class NativeOpenMlsApi {
     List<int> keyPackage,
   );
 
+  AphroditeOpenMlsBuffer proposeSelfUpdate(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  );
+
   AphroditeOpenMlsBuffer addMember(
     ffi.Pointer<ffi.Void> handle,
     String conversationId,
@@ -113,6 +118,10 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
             .lookupFunction<_ProposeAddMemberNative, _ProposeAddMemberDart>(
           'aphrodite_openmls_propose_add_member',
         ),
+        _proposeSelfUpdate = library
+            .lookupFunction<_ProposeSelfUpdateNative, _ProposeSelfUpdateDart>(
+          'aphrodite_openmls_propose_self_update',
+        ),
         _addMember = library.lookupFunction<_AddMemberNative, _AddMemberDart>(
           'aphrodite_openmls_add_member',
         ),
@@ -157,6 +166,7 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
   final _CreateGroupDart _createGroup;
   final _ProposeRemoveMemberDart _proposeRemoveMember;
   final _ProposeAddMemberDart _proposeAddMember;
+  final _ProposeSelfUpdateDart _proposeSelfUpdate;
   final _AddMemberDart _addMember;
   final _JoinGroupDart _joinGroup;
   final _EncryptApplicationMessageDart _encryptApplicationMessage;
@@ -240,6 +250,19 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
     } finally {
       calloc.free(id);
       calloc.free(bytes);
+    }
+  }
+
+  @override
+  AphroditeOpenMlsBuffer proposeSelfUpdate(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+  ) {
+    final id = conversationId.toNativeUtf8();
+    try {
+      return _proposeSelfUpdate(handle, id.cast());
+    } finally {
+      calloc.free(id);
     }
   }
 
@@ -437,6 +460,15 @@ typedef _ProposeAddMemberDart = AphroditeOpenMlsBuffer Function(
   ffi.Pointer<ffi.Char>,
   ffi.Pointer<ffi.Uint8>,
   int,
+);
+
+typedef _ProposeSelfUpdateNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+);
+typedef _ProposeSelfUpdateDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
 );
 
 typedef _AddMemberNative = AphroditeOpenMlsBuffer Function(
