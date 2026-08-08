@@ -93,6 +93,11 @@ struct HandshakeResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct GroupStateResponse {
+    epoch: u64,
+}
+
+#[derive(Debug, Serialize)]
 struct CommitResponse {
     commit: String,
     welcome: Option<String>,
@@ -549,6 +554,53 @@ pub unsafe extern "C" fn aphrodite_openmls_apply_handshake_message(
     })
 }
 
+/// Applies a server-coordinated MLS state commit to local persisted state.
+///
+/// `expected_epoch` is the post-merge group epoch supplied by the server.
+/// GroupInfo is intentionally not an input because it cannot replace a local
+/// private group state or authenticate the state transition.
+///
+/// # Safety
+/// `handle` and `conversation_id` must be valid. `commit` must point to
+/// `commit_len` readable bytes unless its length is zero.
+#[no_mangle]
+pub unsafe extern "C" fn aphrodite_openmls_apply_group_state(
+    handle: *mut AphroditeOpenMlsHandle,
+    conversation_id: *const c_char,
+    expected_epoch: u64,
+    commit: *const u8,
+    commit_len: usize,
+) -> AphroditeOpenMlsBuffer {
+    catch_buffer(|| {
+        let Some(engine) = handle_ref(handle) else {
+            return response_buffer(error_response::<()>("invalid_handle", "handle is null"));
+        };
+        let Some(conversation_id) = read_c_string(conversation_id) else {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "conversation_id must be valid UTF-8",
+            ));
+        };
+        if commit.is_null() && commit_len > 0 {
+            return response_buffer(error_response::<()>(
+                "invalid_argument",
+                "commit must not be null when commit_len is nonzero",
+            ));
+        }
+        let commit = if commit_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(commit, commit_len) }
+        };
+        match engine.apply_group_state(conversation_id, expected_epoch, commit) {
+            Ok(epoch) => response_buffer(success_response(GroupStateResponse { epoch })),
+            Err(error) => {
+                response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
+            }
+        }
+    })
+}
+
 /// Creates, merges, and returns a Commit covering locally persisted proposals.
 ///
 /// # Safety
@@ -762,6 +814,10 @@ fn error_code(error: &OpenMlsError) -> &'static str {
         OpenMlsError::GroupNotFound => "group_not_found",
         OpenMlsError::GroupDeletion(_) => "group_deletion_failed",
         OpenMlsError::ProposalCreation(_) => "proposal_creation_failed",
+        OpenMlsError::GroupStateEpochMismatch { .. } => "group_state_epoch_mismatch",
+        OpenMlsError::GroupStateGroupIdMismatch => "group_state_group_id_mismatch",
+        OpenMlsError::GroupStateCommitEpochMismatch { .. } => "group_state_commit_epoch_mismatch",
+        OpenMlsError::ExpectedGroupStateCommit => "expected_group_state_commit",
         OpenMlsError::DeviceStateDestruction(_) => "device_state_destruction_failed",
         OpenMlsError::GroupPersistenceMissing => "group_persistence_missing",
         OpenMlsError::EmptyApplicationMessage => "empty_application_message",
@@ -855,6 +911,38 @@ mod tests {
         assert!(ciphertext_json.contains("ciphertext"));
         unsafe {
             aphrodite_openmls_free_buffer(ciphertext);
+            aphrodite_openmls_close(handle);
+        }
+    }
+
+    #[test]
+    fn rejects_group_state_epoch_before_mutation() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let directory =
+            CString::new(directory.path().to_str().expect("UTF-8 path")).expect("CString");
+        let handle = unsafe { aphrodite_openmls_open(directory.as_ptr()) };
+        assert!(!handle.is_null());
+        let device = CString::new("device-ffi-group-state").expect("CString");
+        let identity = unsafe { aphrodite_openmls_initialize_device(handle, device.as_ptr()) };
+        unsafe { aphrodite_openmls_free_buffer(identity) };
+        let conversation = CString::new("conversation-ffi-group-state").expect("CString");
+        let group = unsafe { aphrodite_openmls_create_group(handle, conversation.as_ptr()) };
+        unsafe { aphrodite_openmls_free_buffer(group) };
+
+        let response = unsafe {
+            aphrodite_openmls_apply_group_state(
+                handle,
+                conversation.as_ptr(),
+                2,
+                b"invalid".as_ptr(),
+                b"invalid".len(),
+            )
+        };
+        let json = read_buffer(&response);
+        assert!(json.contains("\"ok\":false"));
+        assert!(json.contains("group_state_epoch_mismatch"));
+        unsafe {
+            aphrodite_openmls_free_buffer(response);
             aphrodite_openmls_close(handle);
         }
     }

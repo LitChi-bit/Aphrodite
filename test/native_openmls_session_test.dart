@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:ffi' as ffi;
 
 import 'package:aphrodite/chat/e2ee/native_openmls_session.dart';
+import 'package:aphrodite/chat/e2ee/openmls_client.dart';
 import 'package:aphrodite/chat/e2ee/openmls_ffi_bindings.dart';
 import 'package:ffi/ffi.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -62,6 +63,15 @@ void main() {
       conversationId: 'conversation-1',
       handshake: <int>[13, 14],
     );
+    await session.applyGroupState(
+      conversationId: 'conversation-1',
+      state: OpenMlsGroupState(
+        conversationId: 'conversation-1',
+        epoch: 2,
+        groupInfo: <int>[99],
+        commit: <int>[15, 16],
+      ),
+    );
     final commit = await session.commitPendingProposals(
       conversationId: 'conversation-1',
     );
@@ -93,7 +103,7 @@ void main() {
     expect(commit.epoch, 2);
     await session.removeLocalGroup(conversationId: 'conversation-1');
     await session.destroyDeviceState();
-    expect(native.releasedBuffers, 15);
+    expect(native.releasedBuffers, 16);
 
     await session.close();
     expect(native.closed, isTrue);
@@ -113,6 +123,31 @@ void main() {
     );
     expect(native.releasedBuffers, 1);
   });
+
+  test('rejects mismatched group state conversation before FFI', () async {
+    final native = _FakeNativeOpenMlsApi();
+    final session = NativeOpenMlsSession(
+      bindings: native,
+      appSupportDir: r'C:\Aphrodite\state',
+    )..open();
+
+    await expectLater(
+      session.applyGroupState(
+        conversationId: 'conversation-1',
+        state: OpenMlsGroupState(
+          conversationId: 'conversation-2',
+          epoch: 2,
+          groupInfo: <int>[99],
+          commit: <int>[15, 16],
+        ),
+      ),
+      throwsA(isA<NativeOpenMlsException>()),
+    );
+    expect(native.applyGroupStateCalls, 0);
+    expect(native.releasedBuffers, 0);
+
+    await session.close();
+  });
 }
 
 final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
@@ -121,6 +156,7 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
   final bool failInitialization;
   var closed = false;
   var releasedBuffers = 0;
+  var applyGroupStateCalls = 0;
   final _buffers = <ffi.Pointer<AphroditeOpenMlsBuffer>>[];
 
   @override
@@ -299,6 +335,22 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
         'data': <String, dynamic>{'kind': 'proposal_stored', 'epoch': 1},
         'error': null,
       });
+
+  @override
+  AphroditeOpenMlsBuffer applyGroupState(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    int expectedEpoch,
+    List<int> commit,
+  ) {
+    applyGroupStateCalls += 1;
+    return _jsonBuffer(<String, dynamic>{
+      'abi_version': 1,
+      'ok': true,
+      'data': <String, dynamic>{'epoch': expectedEpoch},
+      'error': null,
+    });
+  }
 
   @override
   AphroditeOpenMlsBuffer commitPendingProposals(

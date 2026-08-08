@@ -271,6 +271,38 @@ final class NativeOpenMlsSession implements E2eeClient {
         );
       });
 
+  Future<void> applyGroupState({
+    required String conversationId,
+    required OpenMlsGroupState state,
+  }) =>
+      _serialized(() {
+        if (conversationId.trim().isEmpty ||
+            conversationId.trim() != conversationId ||
+            state.conversationId != conversationId) {
+          throw const NativeOpenMlsException(
+            'MLS group state conversation ID is invalid',
+          );
+        }
+        if (state.epoch < 0) {
+          throw const NativeOpenMlsException(
+              'MLS group state epoch is invalid');
+        }
+        final response = _readAndRelease(
+          _bindings.applyGroupState(
+            _requireHandle(),
+            conversationId,
+            state.epoch,
+            state.commit,
+          ),
+        );
+        final data = _requireData(response, 'apply_group_state');
+        if (_requireInt(data, 'epoch') != state.epoch) {
+          throw const NativeOpenMlsException(
+            'native MLS group state epoch is invalid',
+          );
+        }
+      });
+
   Future<NativeOpenMlsCommitBundle> commitPendingProposals({
     required String conversationId,
   }) =>

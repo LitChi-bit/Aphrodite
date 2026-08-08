@@ -64,6 +64,12 @@ AphroditeOpenMlsBuffer aphrodite_openmls_apply_handshake_message(
     const char *conversation_id,
     const uint8_t *handshake,
     size_t handshake_len);
+AphroditeOpenMlsBuffer aphrodite_openmls_apply_group_state(
+    AphroditeOpenMlsHandle *handle,
+    const char *conversation_id,
+    uint64_t expected_epoch,
+    const uint8_t *commit,
+    size_t commit_len);
 AphroditeOpenMlsBuffer aphrodite_openmls_commit_pending_proposals(
     AphroditeOpenMlsHandle *handle,
     const char *conversation_id);

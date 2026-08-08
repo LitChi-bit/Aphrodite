@@ -11,10 +11,10 @@ use std::{
 
 use openmls::prelude::{
     tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize},
-    BasicCredential, Ciphersuite, CredentialWithKey, GroupId, KeyPackage, KeyPackageBundle,
-    KeyPackageIn, KeyPackageNewError, LeafNodeIndex, LeafNodeParameters, Lifetime, MlsGroup,
-    MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn, OpenMlsProvider,
-    ProcessedMessageContent,
+    BasicCredential, Ciphersuite, ContentType, CredentialWithKey, GroupId, KeyPackage,
+    KeyPackageBundle, KeyPackageIn, KeyPackageNewError, LeafNodeIndex, LeafNodeParameters,
+    Lifetime, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn,
+    OpenMlsProvider, ProcessedMessageContent,
 };
 
 pub const MLS_CIPHERSUITE_NAME: &str = "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519";
@@ -538,6 +538,67 @@ impl NativeMlsEngine {
         }
     }
 
+    /// Applies a server-coordinated next MLS group state to this local device.
+    ///
+    /// `expected_epoch` is the post-merge epoch returned by the server. The
+    /// attached GroupInfo is intentionally not consumed here: it is public
+    /// auxiliary material and cannot safely replace this device's private MLS
+    /// group state or the authenticated Commit transition.
+    pub fn apply_group_state(
+        &self,
+        conversation_id: impl AsRef<str>,
+        expected_epoch: u64,
+        commit: &[u8],
+    ) -> Result<u64, OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let group_id = group_id_from_conversation_id(conversation_id)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?
+            .ok_or(OpenMlsError::GroupNotFound)?;
+        let local_epoch = group.epoch().as_u64();
+        let next_epoch = local_epoch
+            .checked_add(1)
+            .ok_or(OpenMlsError::EpochOverflow)?;
+        if expected_epoch != next_epoch {
+            return Err(OpenMlsError::GroupStateEpochMismatch {
+                expected: next_epoch,
+                received: expected_epoch,
+            });
+        }
+        let protocol_message = protocol_message_from_tls(commit)?;
+        if protocol_message.content_type() != ContentType::Commit {
+            return Err(OpenMlsError::ExpectedGroupStateCommit);
+        }
+        if protocol_message.group_id().as_slice() != group_id.as_slice() {
+            return Err(OpenMlsError::GroupStateGroupIdMismatch);
+        }
+        if protocol_message.epoch().as_u64() != local_epoch {
+            return Err(OpenMlsError::GroupStateCommitEpochMismatch {
+                expected: local_epoch,
+                received: protocol_message.epoch().as_u64(),
+            });
+        }
+        let processed = group
+            .process_message(&self.provider, protocol_message)
+            .map_err(|error| OpenMlsError::HandshakeMessageProcessing(error.to_string()))?;
+        let ProcessedMessageContent::StagedCommitMessage(commit) = processed.into_content() else {
+            return Err(OpenMlsError::ExpectedGroupStateCommit);
+        };
+        group
+            .merge_staged_commit(&self.provider, *commit)
+            .map_err(|error| OpenMlsError::CommitMerge(error.to_string()))?;
+        let merged_epoch = group.epoch().as_u64();
+        if merged_epoch != expected_epoch {
+            return Err(OpenMlsError::GroupStateEpochMismatch {
+                expected: expected_epoch,
+                received: merged_epoch,
+            });
+        }
+        Ok(merged_epoch)
+    }
+
     /// Creates and merges a Commit covering the locally persisted proposal queue.
     ///
     /// The caller may transmit only the returned public MLS bytes. Any proposal
@@ -1034,6 +1095,16 @@ pub enum OpenMlsError {
     HandshakeMessageProcessing(String),
     #[error("expected an MLS Proposal or Commit message")]
     ExpectedHandshakeMessage,
+    #[error("expected an MLS Commit message for group state synchronization")]
+    ExpectedGroupStateCommit,
+    #[error("server MLS group state epoch mismatch: expected {expected}, received {received}")]
+    GroupStateEpochMismatch { expected: u64, received: u64 },
+    #[error("MLS group state commit group ID does not match the conversation")]
+    GroupStateGroupIdMismatch,
+    #[error("MLS group state commit epoch mismatch: expected {expected}, received {received}")]
+    GroupStateCommitEpochMismatch { expected: u64, received: u64 },
+    #[error("MLS group epoch cannot advance beyond u64::MAX")]
+    EpochOverflow,
     #[error("failed to persist an MLS Proposal: {0}")]
     ProposalStorage(String),
     #[error("failed to create an MLS Commit: {0}")]
@@ -1470,16 +1541,40 @@ mod tests {
             .commit_pending_proposals(conversation_id)
             .expect("creator commits the pending add proposal");
         assert_eq!(add_commit.epoch(), 2);
-        let add_commit_result = joiner
-            .apply_handshake_message(conversation_id, add_commit.commit())
-            .expect("joiner validates and merges add commit");
-        assert_eq!(add_commit_result.kind(), "commit_merged");
-        assert_eq!(add_commit_result.epoch(), 2);
+        assert!(matches!(
+            joiner.apply_group_state(conversation_id, 3, add_commit.commit()),
+            Err(OpenMlsError::GroupStateEpochMismatch {
+                expected: 2,
+                received: 3,
+            })
+        ));
+        joiner
+            .create_group("conversation-wrong-group")
+            .expect("joiner creates an unrelated group");
+        assert!(matches!(
+            joiner.apply_group_state("conversation-wrong-group", 1, add_commit.commit()),
+            Err(OpenMlsError::GroupStateGroupIdMismatch)
+        ));
+        let applied_epoch = joiner
+            .apply_group_state(conversation_id, 2, add_commit.commit())
+            .expect("joiner validates and merges the coordinated add state");
+        assert_eq!(applied_epoch, 2);
+        assert!(matches!(
+            joiner.apply_group_state(conversation_id, 3, add_commit.commit()),
+            Err(OpenMlsError::GroupStateCommitEpochMismatch {
+                expected: 2,
+                received: 1,
+            })
+        ));
 
         let update_proposal = creator
             .propose_self_update(conversation_id)
             .expect("creator creates a signed update proposal");
         assert!(!update_proposal.is_empty());
+        assert!(matches!(
+            joiner.apply_group_state(conversation_id, 3, &update_proposal),
+            Err(OpenMlsError::ExpectedGroupStateCommit)
+        ));
         let update_proposal_result = joiner
             .apply_handshake_message(conversation_id, &update_proposal)
             .expect("joiner validates and stores update proposal");

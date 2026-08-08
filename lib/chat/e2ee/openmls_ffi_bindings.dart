@@ -74,6 +74,13 @@ abstract interface class NativeOpenMlsApi {
     List<int> handshake,
   );
 
+  AphroditeOpenMlsBuffer applyGroupState(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    int expectedEpoch,
+    List<int> commit,
+  );
+
   AphroditeOpenMlsBuffer commitPendingProposals(
     ffi.Pointer<ffi.Void> handle,
     String conversationId,
@@ -140,6 +147,10 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
             _ApplyHandshakeMessageNative, _ApplyHandshakeMessageDart>(
           'aphrodite_openmls_apply_handshake_message',
         ),
+        _applyGroupState = library
+            .lookupFunction<_ApplyGroupStateNative, _ApplyGroupStateDart>(
+          'aphrodite_openmls_apply_group_state',
+        ),
         _commitPendingProposals = library.lookupFunction<
             _CommitPendingProposalsNative, _CommitPendingProposalsDart>(
           'aphrodite_openmls_commit_pending_proposals',
@@ -172,6 +183,7 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
   final _EncryptApplicationMessageDart _encryptApplicationMessage;
   final _DecryptApplicationMessageDart _decryptApplicationMessage;
   final _ApplyHandshakeMessageDart _applyHandshakeMessage;
+  final _ApplyGroupStateDart _applyGroupState;
   final _CommitPendingProposalsDart _commitPendingProposals;
   final _RemoveLocalGroupDart _removeLocalGroup;
   final _DestroyDeviceStateDart _destroyDeviceState;
@@ -368,6 +380,20 @@ final class NativeOpenMlsBindings implements NativeOpenMlsApi {
       );
 
   @override
+  AphroditeOpenMlsBuffer applyGroupState(
+    ffi.Pointer<ffi.Void> handle,
+    String conversationId,
+    int expectedEpoch,
+    List<int> commit,
+  ) =>
+      _withBinaryText(
+        conversationId,
+        commit,
+        (id, bytes) =>
+            _applyGroupState(handle, id, expectedEpoch, bytes, commit.length),
+      );
+
+  @override
   AphroditeOpenMlsBuffer commitPendingProposals(
     ffi.Pointer<ffi.Void> handle,
     String conversationId,
@@ -530,6 +556,21 @@ typedef _ApplyHandshakeMessageNative = AphroditeOpenMlsBuffer Function(
 typedef _ApplyHandshakeMessageDart = AphroditeOpenMlsBuffer Function(
   ffi.Pointer<ffi.Void>,
   ffi.Pointer<ffi.Char>,
+  ffi.Pointer<ffi.Uint8>,
+  int,
+);
+
+typedef _ApplyGroupStateNative = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  ffi.Uint64,
+  ffi.Pointer<ffi.Uint8>,
+  ffi.UintPtr,
+);
+typedef _ApplyGroupStateDart = AphroditeOpenMlsBuffer Function(
+  ffi.Pointer<ffi.Void>,
+  ffi.Pointer<ffi.Char>,
+  int,
   ffi.Pointer<ffi.Uint8>,
   int,
 );
