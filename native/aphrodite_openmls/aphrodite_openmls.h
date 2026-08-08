@@ -28,6 +28,10 @@ AphroditeOpenMlsBuffer aphrodite_openmls_generate_key_packages(
 AphroditeOpenMlsBuffer aphrodite_openmls_create_group(
     AphroditeOpenMlsHandle *handle,
     const char *conversation_id);
+AphroditeOpenMlsBuffer aphrodite_openmls_propose_remove_member(
+    AphroditeOpenMlsHandle *handle,
+    const char *conversation_id,
+    uint32_t leaf_index);
 AphroditeOpenMlsBuffer aphrodite_openmls_encrypt_application_message(
     AphroditeOpenMlsHandle *handle,
     const char *conversation_id,

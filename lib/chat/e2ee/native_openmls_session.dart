@@ -89,6 +89,29 @@ final class NativeOpenMlsSession implements E2eeClient {
         return _decodeHex(_requireString(data, 'group_id'));
       });
 
+  Future<List<int>> proposeRemoveMember({
+    required String conversationId,
+    required int leafIndex,
+  }) =>
+      _serialized(() {
+        if (leafIndex < 0 || leafIndex > 0xffffffff) {
+          throw ArgumentError.value(
+            leafIndex,
+            'leafIndex',
+            'must fit a uint32',
+          );
+        }
+        final response = _readAndRelease(
+          _bindings.proposeRemoveMember(
+            _requireHandle(),
+            conversationId,
+            leafIndex,
+          ),
+        );
+        final data = _requireData(response, 'propose_remove_member');
+        return _decodeHex(_requireString(data, 'proposal'));
+      });
+
   Future<OpenMlsWelcomeBundle> addMember({
     required String conversationId,
     required List<int> keyPackage,

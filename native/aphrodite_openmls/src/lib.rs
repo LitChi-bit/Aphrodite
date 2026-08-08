@@ -12,12 +12,11 @@ use std::{
 use openmls::prelude::{
     tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize},
     BasicCredential, Ciphersuite, CredentialWithKey, GroupId, KeyPackage, KeyPackageBundle,
-    KeyPackageIn, KeyPackageNewError, Lifetime, MlsGroup, MlsGroupCreateConfig, MlsGroupJoinConfig,
-    MlsMessageBodyIn, MlsMessageIn, OpenMlsProvider, ProcessedMessageContent,
+    KeyPackageIn, KeyPackageNewError, LeafNodeIndex, Lifetime, MlsGroup, MlsGroupCreateConfig,
+    MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn, OpenMlsProvider, ProcessedMessageContent,
 };
 
-pub const MLS_CIPHERSUITE_NAME: &str =
-    "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519";
+pub const MLS_CIPHERSUITE_NAME: &str = "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519";
 use openmls_basic_credential::SignatureKeyPair;
 use openmls_rust_crypto::RustCrypto;
 use openmls_sqlite_storage::{Codec, Connection, SqliteStorageProvider};
@@ -314,6 +313,28 @@ impl NativeMlsEngine {
             epoch: protocol_message.epoch().as_u64(),
             header: Vec::new(),
         })
+    }
+
+    pub fn propose_remove_member(
+        &self,
+        conversation_id: impl AsRef<str>,
+        leaf_index: u32,
+    ) -> Result<Vec<u8>, OpenMlsError> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let group_id = group_id_from_conversation_id(conversation_id)?;
+        let mut group = MlsGroup::load(self.provider.storage(), &group_id)?
+            .ok_or(OpenMlsError::GroupNotFound)?;
+        let identity = self.require_device_identity()?;
+        let signer = self.provider.read_device_signer(&identity)?;
+        let (proposal, _) = group
+            .propose_remove_member(&self.provider, &signer, LeafNodeIndex::new(leaf_index))
+            .map_err(|error| OpenMlsError::ProposalCreation(error.to_string()))?;
+        proposal
+            .tls_serialize_detached()
+            .map_err(OpenMlsError::TlsSerialization)
     }
 
     pub fn add_member(
@@ -947,6 +968,8 @@ pub enum OpenMlsError {
     ExpectedWelcome,
     #[error("failed to process MLS Welcome: {0}")]
     WelcomeProcessing(String),
+    #[error("failed to create MLS Proposal: {0}")]
+    ProposalCreation(String),
     #[error("failed to add MLS member: {0}")]
     MemberAddition(String),
     #[error("failed to merge MLS Commit: {0}")]
@@ -1249,7 +1272,7 @@ mod tests {
         let ciphertext = reopened
             .encrypt_application_message(conversation_id, b"test payload")
             .expect("persisted group encrypts after reopen");
-        let mut serialized = ciphertext.ciphertext().as_ref();
+        let mut serialized: &[u8] = ciphertext.ciphertext();
         let _parsed = openmls::prelude::MlsMessageIn::tls_deserialize(&mut serialized)
             .expect("ciphertext is valid TLS material");
 
@@ -1358,7 +1381,7 @@ mod tests {
             .encrypt_application_message(conversation_id, b"hello from creator")
             .expect("creator encrypts");
         let plaintext = joiner
-            .decrypt_application_message(conversation_id, &ciphertext)
+            .decrypt_application_message(conversation_id, ciphertext.ciphertext())
             .expect("joiner decrypts");
         assert_eq!(plaintext, b"hello from creator");
 
@@ -1366,9 +1389,28 @@ mod tests {
             .encrypt_application_message(conversation_id, b"hello from joiner")
             .expect("joiner encrypts");
         let response_plaintext = creator
-            .decrypt_application_message(conversation_id, &response)
+            .decrypt_application_message(conversation_id, response.ciphertext())
             .expect("creator decrypts");
         assert_eq!(response_plaintext, b"hello from joiner");
+
+        let remove_proposal = creator
+            .propose_remove_member(conversation_id, 1)
+            .expect("creator creates a signed remove proposal");
+        assert!(!remove_proposal.is_empty());
+        let proposal_result = joiner
+            .apply_handshake_message(conversation_id, &remove_proposal)
+            .expect("joiner validates and stores remove proposal");
+        assert_eq!(proposal_result.kind(), "proposal_stored");
+
+        let remove_commit = creator
+            .commit_pending_proposals(conversation_id)
+            .expect("creator commits the pending remove proposal");
+        assert_eq!(remove_commit.epoch(), 2);
+        let commit_result = joiner
+            .apply_handshake_message(conversation_id, remove_commit.commit())
+            .expect("joiner validates and merges remove commit");
+        assert_eq!(commit_result.kind(), "commit_merged");
+        assert_eq!(commit_result.epoch(), 2);
     }
 
     #[test]
