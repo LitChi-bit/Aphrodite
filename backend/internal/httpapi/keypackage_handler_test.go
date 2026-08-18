@@ -85,17 +85,24 @@ func TestListKeyPackagesHidesPublicMaterialAndClaimReturnsRawBase64(t *testing.T
 	if err := json.NewDecoder(claimResponse.Body).Decode(&envelope); err != nil || len(envelope.Data) != 1 || envelope.Data[0].KeyPackage != base64.RawStdEncoding.EncodeToString(item.Package) || envelope.Data[0].Signature != base64.RawStdEncoding.EncodeToString(item.Signature) {
 		t.Fatalf("unexpected claim response: %#v, %v", envelope, err)
 	}
+	if service.claimTargetAccountID != "recipient-example" || service.claimRequesterAccount != "requester-example" || service.claimRequesterDevice != "device-requester" || service.claimRequesterSession != "session-example" {
+		t.Fatalf("claim audit subject mismatch: %#v", service)
+	}
 }
 
 type stubKeyPackageService struct {
-	publishCalls     int
-	publishAccountID string
-	publishDeviceID  string
-	published        []keypackage.Publish
-	available        []keypackage.KeyPackage
-	claimed          []keypackage.KeyPackage
-	listAccountID    string
-	listLimit        int
+	publishCalls          int
+	publishAccountID      string
+	publishDeviceID       string
+	published             []keypackage.Publish
+	available             []keypackage.KeyPackage
+	claimed               []keypackage.KeyPackage
+	claimTargetAccountID  string
+	claimRequesterAccount string
+	claimRequesterDevice  string
+	claimRequesterSession string
+	listAccountID         string
+	listLimit             int
 }
 
 func (service *stubKeyPackageService) Publish(_ context.Context, accountID, deviceID string, items []keypackage.Publish) error {
@@ -110,6 +117,10 @@ func (service *stubKeyPackageService) ListAvailable(_ context.Context, accountID
 	return service.available, nil
 }
 
-func (service *stubKeyPackageService) Claim(_ context.Context, _ string, _ int, _ time.Time) ([]keypackage.KeyPackage, error) {
+func (service *stubKeyPackageService) Claim(_ context.Context, targetAccountID, requesterAccountID, requesterDeviceID, requesterSessionID string, _ int, _ time.Time) ([]keypackage.KeyPackage, error) {
+	service.claimTargetAccountID = targetAccountID
+	service.claimRequesterAccount = requesterAccountID
+	service.claimRequesterDevice = requesterDeviceID
+	service.claimRequesterSession = requesterSessionID
 	return service.claimed, nil
 }

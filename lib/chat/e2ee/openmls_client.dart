@@ -93,14 +93,14 @@ class OpenMlsGroupState {
   OpenMlsGroupState({
     required this.conversationId,
     required this.epoch,
-    required List<int> groupInfo,
+    required List<int>? groupInfo,
     required List<int> commit,
-  })  : groupInfo = List.unmodifiable(groupInfo),
+  })  : groupInfo = groupInfo == null ? null : List.unmodifiable(groupInfo),
         commit = List.unmodifiable(commit);
 
   final String conversationId;
   final int epoch;
-  final List<int> groupInfo;
+  final List<int>? groupInfo;
   final List<int> commit;
 }
 
@@ -124,12 +124,12 @@ class OpenMlsCommit {
   OpenMlsCommit({
     required this.conversationId,
     required this.epoch,
-    required List<int> groupInfo,
+    required List<int>? groupInfo,
     required List<int> commit,
     required List<OpenMlsWelcome> welcomes,
     required List<String> proposalIds,
     required List<String> removedDeviceIds,
-  })  : groupInfo = List.unmodifiable(groupInfo),
+  })  : groupInfo = groupInfo == null ? null : List.unmodifiable(groupInfo),
         commit = List.unmodifiable(commit),
         welcomes = List.unmodifiable(welcomes),
         proposalIds = List.unmodifiable(proposalIds),
@@ -137,7 +137,7 @@ class OpenMlsCommit {
 
   final String conversationId;
   final int epoch;
-  final List<int> groupInfo;
+  final List<int>? groupInfo;
   final List<int> commit;
   final List<OpenMlsWelcome> welcomes;
   final List<String> proposalIds;

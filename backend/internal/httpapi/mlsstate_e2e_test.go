@@ -62,7 +62,7 @@ func TestMLSStateAPIEndToEnd(t *testing.T) {
 		Data groupStateResponse `json:"data"`
 	}
 	decodeChatE2EResponse(t, response, &state)
-	if state.Data.Epoch != 0 || state.Data.GroupInfo != "Z3JvdXAtaW5mby1leGFtcGxl" || state.Data.CommitData != "Y29tbWl0LWV4YW1wbGU" {
+	if state.Data.Epoch != 0 || state.Data.GroupInfo == nil || *state.Data.GroupInfo != "Z3JvdXAtaW5mby1leGFtcGxl" || state.Data.CommitData != "Y29tbWl0LWV4YW1wbGU" {
 		t.Fatalf("unexpected MLS state: %#v", state.Data)
 	}
 

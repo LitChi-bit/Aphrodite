@@ -9,11 +9,10 @@ import 'openmls_ffi_bindings.dart';
 
 const nativeOpenMlsCiphersuite = 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519';
 
-/// Minimal Dart adapter for the currently exported native OpenMLS ABI.
+/// Dart adapter for the exported native OpenMLS ABI.
 ///
-/// Group and message operations remain unavailable until their native ABI
-/// functions are implemented. This class deliberately does not implement
-/// [OpenMlsClient] to avoid presenting a partial MLS implementation as complete.
+/// The Rust engine owns all private MLS state. Dart only validates operation
+/// inputs and transports public protocol material across the FFI boundary.
 final class NativeOpenMlsSession implements E2eeClient, MlsGroupNativeAdapter {
   NativeOpenMlsSession({
     required NativeOpenMlsApi bindings,
@@ -114,11 +113,20 @@ final class NativeOpenMlsSession implements E2eeClient, MlsGroupNativeAdapter {
         return _decodeHex(_requireString(data, 'proposal'));
       });
 
-  Future<List<int>> proposeAddMember({
+  @override
+  Future<OpenMlsAddProposalBundle> proposeAddMember({
     required String conversationId,
     required List<int> keyPackage,
   }) =>
       _serialized(() {
+        if (conversationId.isEmpty || conversationId.trim() != conversationId) {
+          throw const NativeOpenMlsException(
+            'MLS Add proposal conversation ID is invalid',
+          );
+        }
+        if (keyPackage.isEmpty) {
+          throw const NativeOpenMlsException('MLS KeyPackage is empty');
+        }
         final response = _readAndRelease(
           _bindings.proposeAddMember(
             _requireHandle(),
@@ -127,7 +135,15 @@ final class NativeOpenMlsSession implements E2eeClient, MlsGroupNativeAdapter {
           ),
         );
         final data = _requireData(response, 'propose_add_member');
-        return _decodeHex(_requireString(data, 'proposal'));
+        final epoch = _requireInt(data, 'epoch');
+        if (epoch < 0) {
+          throw const NativeOpenMlsException(
+              'MLS Add proposal epoch is invalid');
+        }
+        return OpenMlsAddProposalBundle(
+          proposal: _decodeHex(_requireString(data, 'proposal')),
+          epoch: epoch,
+        );
       });
 
   Future<List<int>> proposeSelfUpdate({
@@ -272,6 +288,26 @@ final class NativeOpenMlsSession implements E2eeClient, MlsGroupNativeAdapter {
         return _decodeHex(_requireString(data, 'plaintext'));
       });
 
+  @override
+  Future<OpenMlsProposalApplyResult> applyProposal({
+    required String conversationId,
+    required List<int> proposal,
+  }) async {
+    if (conversationId.isEmpty || conversationId.trim() != conversationId) {
+      throw const NativeOpenMlsException(
+          'MLS proposal conversation ID is invalid');
+    }
+    final result = await applyHandshakeMessage(
+      conversationId: conversationId,
+      handshake: proposal,
+    );
+    if (result.kind != 'proposal_stored') {
+      throw const NativeOpenMlsException(
+          'native MLS material is not a proposal');
+    }
+    return OpenMlsProposalApplyResult(epoch: result.epoch);
+  }
+
   Future<NativeOpenMlsHandshakeResult> applyHandshakeMessage({
     required String conversationId,
     required List<int> handshake,
@@ -324,7 +360,8 @@ final class NativeOpenMlsSession implements E2eeClient, MlsGroupNativeAdapter {
         }
       });
 
-  Future<NativeOpenMlsCommitBundle> commitPendingProposals({
+  @override
+  Future<OpenMlsCommitBundle> commitPendingProposals({
     required String conversationId,
   }) =>
       _serialized(() {
@@ -334,7 +371,7 @@ final class NativeOpenMlsSession implements E2eeClient, MlsGroupNativeAdapter {
         final data = _requireData(response, 'commit_pending_proposals');
         final welcome = data['welcome'];
         final groupInfo = data['group_info'];
-        return NativeOpenMlsCommitBundle(
+        return OpenMlsCommitBundle(
           commit: _decodeHex(_requireString(data, 'commit')),
           welcome: welcome is String ? _decodeHex(welcome) : null,
           groupInfo: groupInfo is String ? _decodeHex(groupInfo) : null,

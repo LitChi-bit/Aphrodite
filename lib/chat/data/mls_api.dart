@@ -31,6 +31,25 @@ class MlsApi {
     );
   }
 
+  Future<List<MlsClaimedKeyPackage>> claimKeyPackages(
+    String accountId, {
+    int limit = 1,
+  }) async {
+    _requireCanonicalIdentifier(accountId, 'accountId');
+    if (limit < 1 || limit > 20) {
+      throw ArgumentError.value(limit, 'limit', 'must be between 1 and 20');
+    }
+    final response = await _networkClient.post(
+      '/v1/accounts/$accountId/mls/key-packages:claim?limit=$limit',
+    );
+    return ApiEnvelope<List<MlsClaimedKeyPackage>>.fromJson(
+      requireJsonMap(response, 'claim key packages response'),
+      (data) => requireJsonList(data, 'key package data')
+          .map(_claimedKeyPackageFromJson)
+          .toList(growable: false),
+    ).data;
+  }
+
   Future<List<OpenMlsWelcome>> claimWelcomes() async {
     final response = await _networkClient.post('/v1/mls/welcomes:claim');
     return ApiEnvelope<List<OpenMlsWelcome>>.fromJson(
@@ -97,7 +116,9 @@ class MlsApi {
       '/v1/conversations/${commit.conversationId}/mls/state',
       data: {
         'epoch': commit.epoch,
-        'group_info': _rawBase64(commit.groupInfo),
+        'group_info': commit.groupInfo == null
+            ? null
+            : _nonEmptyRawBase64(commit.groupInfo!, 'group_info'),
         'commit': _rawBase64(commit.commit),
         'welcomes': welcomes,
         'removed_device_ids': commit.removedDeviceIds,
@@ -108,6 +129,18 @@ class MlsApi {
       requireJsonMap(response, 'commit MLS state response'),
       _groupStateFromJson,
     ).data;
+  }
+
+  static MlsClaimedKeyPackage _claimedKeyPackageFromJson(Object? value) {
+    final json = requireJsonMap(value, 'claimed key package');
+    return MlsClaimedKeyPackage(
+      id: _requiredString(json['id'], 'id'),
+      deviceId: _requiredString(json['device_id'], 'device_id'),
+      ciphersuite: _requiredString(json['ciphersuite'], 'ciphersuite'),
+      keyPackage: _rawBase64Decode(json['key_package'], 'key_package'),
+      signature: _rawBase64Decode(json['signature'], 'signature'),
+      expiresAt: _requiredDateTime(json['expires_at'], 'expires_at'),
+    );
   }
 
   static OpenMlsWelcome _welcomeFromJson(Object? value) {
@@ -126,7 +159,7 @@ class MlsApi {
       conversationId:
           _requiredString(json['conversation_id'], 'conversation_id'),
       epoch: _requiredInt(json['epoch'], 'epoch'),
-      groupInfo: _rawBase64Decode(json['group_info'], 'group_info'),
+      groupInfo: _optionalRawBase64Decode(json['group_info'], 'group_info'),
       commit: _rawBase64Decode(json['commit'], 'commit'),
     );
   }
@@ -144,6 +177,19 @@ class MlsApi {
 
   static String _rawBase64(List<int> value) =>
       base64Encode(value).replaceAll('=', '');
+
+  static String _nonEmptyRawBase64(List<int> value, String field) {
+    if (value.isEmpty) {
+      throw ArgumentError.value(
+          value, field, '$field must be non-empty or null');
+    }
+    return _rawBase64(value);
+  }
+
+  static List<int>? _optionalRawBase64Decode(Object? value, String field) {
+    if (value == null) return null;
+    return _rawBase64Decode(value, field);
+  }
 
   static List<int> _rawBase64Decode(Object? value, String field) {
     final encoded = _requiredString(value, field);
@@ -170,4 +216,44 @@ class MlsApi {
     }
     return value;
   }
+
+  static DateTime _requiredDateTime(Object? value, String field) {
+    if (value is! String) {
+      throw FormatException('$field must be an ISO-8601 datetime');
+    }
+    final parsed = DateTime.tryParse(value);
+    if (parsed == null) {
+      throw FormatException('$field must be an ISO-8601 datetime');
+    }
+    return parsed.toUtc();
+  }
+
+  static void _requireCanonicalIdentifier(String value, String field) {
+    if (value.isEmpty || value.trim() != value) {
+      throw ArgumentError.value(
+        value,
+        field,
+        'must be non-empty and have no surrounding whitespace',
+      );
+    }
+  }
+}
+
+class MlsClaimedKeyPackage {
+  MlsClaimedKeyPackage({
+    required this.id,
+    required this.deviceId,
+    required this.ciphersuite,
+    required List<int> keyPackage,
+    required List<int> signature,
+    required this.expiresAt,
+  })  : keyPackage = List.unmodifiable(keyPackage),
+        signature = List.unmodifiable(signature);
+
+  final String id;
+  final String deviceId;
+  final String ciphersuite;
+  final List<int> keyPackage;
+  final List<int> signature;
+  final DateTime expiresAt;
 }

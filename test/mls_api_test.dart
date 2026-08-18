@@ -32,6 +32,47 @@ void main() {
     });
   });
 
+  test('claims target key packages with server identifiers intact', () async {
+    final client = _RecordingNetworkClient(
+      postResponse: _envelope([
+        {
+          'id': 'package-1',
+          'device_id': 'target-device-1',
+          'ciphersuite': 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519',
+          'key_package': 'AQI',
+          'signature': 'AwQ',
+          'expires_at': '2026-08-12T04:00:00Z',
+        },
+      ]),
+    );
+    final api = MlsApi(networkClient: client);
+
+    final packages = await api.claimKeyPackages('target-account-1', limit: 2);
+
+    expect(
+      client.lastPath,
+      '/v1/accounts/target-account-1/mls/key-packages:claim?limit=2',
+    );
+    expect(packages.single.id, 'package-1');
+    expect(packages.single.deviceId, 'target-device-1');
+    expect(packages.single.keyPackage, [1, 2]);
+    expect(packages.single.signature, [3, 4]);
+    expect(packages.single.expiresAt, DateTime.utc(2026, 8, 12, 4));
+  });
+
+  test('rejects invalid target key package claim input', () async {
+    final api = MlsApi(networkClient: _RecordingNetworkClient());
+
+    await expectLater(
+      api.claimKeyPackages(' target-account-1 '),
+      throwsArgumentError,
+    );
+    await expectLater(
+      api.claimKeyPackages('target-account-1', limit: 21),
+      throwsArgumentError,
+    );
+  });
+
   test('claims welcomes and decodes raw base64 protocol material', () async {
     final api = MlsApi(
       networkClient: _RecordingNetworkClient(
@@ -98,6 +139,53 @@ void main() {
     ]);
     expect(state.epoch, 4);
     expect(state.groupInfo, [1]);
+  });
+
+  test('preserves an absent group info value as JSON null', () async {
+    final client = _RecordingNetworkClient(
+      putResponse: _envelope({
+        'conversation_id': 'conversation-1',
+        'epoch': 4,
+        'group_info': null,
+        'commit': 'Ag',
+        'committed_at': '2026-08-03T04:00:00Z',
+      }),
+    );
+    final api = MlsApi(networkClient: client);
+
+    final state = await api.commit(
+      OpenMlsCommit(
+        conversationId: 'conversation-1',
+        epoch: 4,
+        groupInfo: null,
+        commit: const [2],
+        welcomes: const [],
+        proposalIds: const [],
+        removedDeviceIds: const [],
+      ),
+    );
+
+    expect(client.lastPutData?['group_info'], isNull);
+    expect(state.groupInfo, isNull);
+  });
+
+  test('rejects empty group info when serializing a commit', () async {
+    final api = MlsApi(networkClient: _RecordingNetworkClient());
+
+    await expectLater(
+      api.commit(
+        OpenMlsCommit(
+          conversationId: 'conversation-1',
+          epoch: 1,
+          groupInfo: const [],
+          commit: const [2],
+          welcomes: const [],
+          proposalIds: const [],
+          removedDeviceIds: const [],
+        ),
+      ),
+      throwsArgumentError,
+    );
   });
 
   test('rejects unpadded-base64 violations and missing welcome targets',

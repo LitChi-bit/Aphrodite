@@ -20,15 +20,18 @@ var (
 // KeyPackage contains only MLS public coordination material. It must never
 // contain an MLS private key, group secret, or decrypted application message.
 type KeyPackage struct {
-	ID          string
-	AccountID   string
-	DeviceID    string
-	Ciphersuite string
-	Package     []byte
-	Signature   []byte
-	CreatedAt   time.Time
-	ExpiresAt   time.Time
-	ConsumedAt  *time.Time
+	ID                  string
+	AccountID           string
+	DeviceID            string
+	Ciphersuite         string
+	Package             []byte
+	Signature           []byte
+	CreatedAt           time.Time
+	ExpiresAt           time.Time
+	ConsumedAt          *time.Time
+	ConsumedByAccountID *string
+	ConsumedByDeviceID  *string
+	ConsumedBySessionID *string
 }
 
 type Publish struct {

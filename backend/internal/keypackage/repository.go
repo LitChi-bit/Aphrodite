@@ -6,9 +6,10 @@ import (
 )
 
 // Repository coordinates public MLS KeyPackages. Claim must be atomic and
-// consume each returned package exactly once.
+// consume each returned package exactly once while recording the authenticated
+// caller for audit purposes.
 type Repository interface {
 	Publish(ctx context.Context, accountID, deviceID string, items []Publish) error
 	ListAvailable(ctx context.Context, accountID string, limit int, now time.Time) ([]KeyPackage, error)
-	Claim(ctx context.Context, accountID string, limit int, now time.Time) ([]KeyPackage, error)
+	Claim(ctx context.Context, targetAccountID, requesterAccountID, requesterDeviceID, requesterSessionID string, limit int, now time.Time) ([]KeyPackage, error)
 }

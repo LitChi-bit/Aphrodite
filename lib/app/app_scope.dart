@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:path_provider/path_provider.dart';
 
 import '../auth/data/auth_api.dart';
 import '../auth/data/auth_repository.dart';
@@ -8,6 +12,10 @@ import '../auth/data/device_metadata.dart';
 import '../auth/data/secure_device_identity_provider.dart';
 import '../auth/data/token_store.dart';
 import '../auth/models/auth_session.dart';
+import '../chat/data/mls_api.dart';
+import '../chat/e2ee/mls_lifecycle_coordinator.dart';
+import '../chat/e2ee/native_openmls_loader.dart';
+import '../chat/e2ee/native_openmls_session.dart';
 import '../core/network/dio_network_client.dart';
 import '../core/network/network_client.dart';
 import '../core/storage/flutter_secure_store.dart';
@@ -71,6 +79,34 @@ final apiAuthRepositoryProvider = Provider<ApiAuthRepository>(
     authSession: ref.watch(authSessionProvider),
   ),
 );
+
+final mlsApiProvider = Provider<MlsApi>(
+  (Ref ref) => MlsApi(networkClient: ref.watch(networkClientProvider)),
+);
+
+final nativeOpenMlsSessionProvider =
+    FutureProvider.autoDispose<NativeOpenMlsSession>((ref) async {
+  final supportDirectory = await getApplicationSupportDirectory();
+  final session = NativeOpenMlsSession(
+    bindings: loadNativeOpenMlsBindings(),
+    appSupportDir: validateNativeOpenMlsSupportDirectory(
+      supportDirectory.path,
+    ),
+  )..open();
+  ref.onDispose(() => unawaited(session.close()));
+  final identity = await ref.read(deviceIdentityProvider).getOrCreate();
+  await session.initializeDevice(deviceId: identity.deviceId);
+  return session;
+});
+
+final mlsLifecycleCoordinatorProvider =
+    FutureProvider.autoDispose<MlsLifecycleCoordinator>((ref) async {
+  final native = await ref.watch(nativeOpenMlsSessionProvider.future);
+  return MlsLifecycleCoordinator(
+    api: ref.watch(mlsApiProvider),
+    native: native,
+  );
+});
 
 class AppScope extends StatelessWidget {
   const AppScope({required this.child, this.overrides = const [], super.key});

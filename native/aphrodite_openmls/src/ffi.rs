@@ -7,8 +7,9 @@ use std::{
 use serde::Serialize;
 
 use crate::{
-    NativeMlsEngine, OpenMlsApplicationMessage, OpenMlsCommitBundle, OpenMlsError,
-    OpenMlsHandshakeResult, OpenMlsKeyPackage, PrivateStatePath, MLS_CIPHERSUITE_NAME,
+    NativeMlsEngine, OpenMlsAddProposalBundle, OpenMlsApplicationMessage, OpenMlsCommitBundle,
+    OpenMlsError, OpenMlsHandshakeResult, OpenMlsKeyPackage, PrivateStatePath,
+    MLS_CIPHERSUITE_NAME,
 };
 
 const ABI_VERSION: u32 = 1;
@@ -63,6 +64,12 @@ struct GroupResponse {
 #[derive(Debug, Serialize)]
 struct ProposalResponse {
     proposal: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AddProposalResponse {
+    proposal: String,
+    epoch: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -377,9 +384,7 @@ pub unsafe extern "C" fn aphrodite_openmls_propose_add_member(
             unsafe { std::slice::from_raw_parts(key_package, key_package_len) }
         };
         match engine.propose_add_member(conversation_id, bytes) {
-            Ok(proposal) => response_buffer(success_response(ProposalResponse {
-                proposal: encode_bytes(&proposal),
-            })),
+            Ok(proposal) => response_buffer(success_response(add_proposal_response(proposal))),
             Err(error) => {
                 response_buffer(error_response::<()>(error_code(&error), &error.to_string()))
             }
@@ -735,6 +740,13 @@ unsafe fn read_c_string<'a>(value: *const c_char) -> Option<&'a str> {
 
 fn encode_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn add_proposal_response(bundle: OpenMlsAddProposalBundle) -> AddProposalResponse {
+    AddProposalResponse {
+        proposal: encode_bytes(bundle.proposal()),
+        epoch: bundle.epoch(),
+    }
 }
 
 fn public_key_package_response(package: &OpenMlsKeyPackage) -> KeyPackageResponse {

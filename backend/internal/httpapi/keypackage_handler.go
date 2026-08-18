@@ -20,7 +20,7 @@ const maxKeyPackageRequestBodyBytes = 2 << 20
 type KeyPackageService interface {
 	Publish(ctx context.Context, accountID, deviceID string, items []keypackage.Publish) error
 	ListAvailable(ctx context.Context, accountID string, limit int, now time.Time) ([]keypackage.KeyPackage, error)
-	Claim(ctx context.Context, accountID string, limit int, now time.Time) ([]keypackage.KeyPackage, error)
+	Claim(ctx context.Context, targetAccountID, requesterAccountID, requesterDeviceID, requesterSessionID string, limit int, now time.Time) ([]keypackage.KeyPackage, error)
 }
 
 type keyPackageHandler struct {
@@ -126,14 +126,15 @@ func (handler keyPackageHandler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (handler keyPackageHandler) claim(w http.ResponseWriter, r *http.Request) {
-	if _, ok := handler.subject(w, r); !ok {
+	subject, ok := handler.subject(w, r)
+	if !ok {
 		return
 	}
 	accountID, limit, ok := handler.accountAndLimit(w, r)
 	if !ok {
 		return
 	}
-	items, err := handler.service.Claim(r.Context(), accountID, limit, handler.now().UTC())
+	items, err := handler.service.Claim(r.Context(), accountID, subject.AccountID, subject.DeviceID, subject.SessionID, limit, handler.now().UTC())
 	if err != nil {
 		handler.writeError(w, r, err)
 		return

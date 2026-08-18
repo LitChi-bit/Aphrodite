@@ -86,7 +86,7 @@ type DeviceRosterEntry struct {
 
 func (commit Commit) Validate() error {
 	if strings.TrimSpace(commit.ConversationID) == "" || strings.TrimSpace(commit.CommittedDeviceID) == "" || commit.Epoch < 0 ||
-		len(commit.GroupInfo) == 0 || len(commit.GroupInfo) > maxMaterialBytes ||
+		(commit.GroupInfo != nil && (len(commit.GroupInfo) == 0 || len(commit.GroupInfo) > maxMaterialBytes)) ||
 		len(commit.CommitData) == 0 || len(commit.CommitData) > maxMaterialBytes ||
 		commit.CommittedAt.IsZero() || len(commit.Welcomes) > 20 {
 		return ErrInvalidCommit

@@ -33,6 +33,35 @@ func TestMLSCommitRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestMLSCommitAcceptsNullGroupInfoAndRejectsEmptyGroupInfo(t *testing.T) {
+	service := &recordingMLSStateService{state: mlsstate.GroupState{ConversationID: "conversation-example", Epoch: 1, CommitData: []byte{2}, CommittedAt: time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)}}
+	authenticator := &stubChatAuthenticator{claims: auth.AccessTokenClaims{AccountID: "account-example", DeviceID: "device-example", SessionID: "session-example"}}
+	server := NewServer(discardLogger(), WithMLSStateService(service, authenticator, stubAccessTokenVerifier{}))
+
+	request := httptest.NewRequest(http.MethodPut, "/v1/conversations/conversation-example/mls/state", strings.NewReader(`{"epoch":1,"group_info":null,"commit":"Ag"}`))
+	request.Header.Set("Authorization", "Bearer access-example")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("null group info status = %d body = %s", response.Code, response.Body.String())
+	}
+	if service.commit.GroupInfo != nil {
+		t.Fatalf("null group info = %x, want nil", service.commit.GroupInfo)
+	}
+	if !strings.Contains(response.Body.String(), `"group_info":null`) {
+		t.Fatalf("null group info response = %s", response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPut, "/v1/conversations/conversation-example/mls/state", strings.NewReader(`{"epoch":1,"group_info":"","commit":"Ag"}`))
+	request.Header.Set("Authorization", "Bearer access-example")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	assertErrorResponse(t, response, http.StatusBadRequest, "invalid_request")
+	if service.commitCalls != 1 {
+		t.Fatal("empty group info must not reach service")
+	}
+}
+
 func TestClaimWelcomeUsesAuthenticatedDevice(t *testing.T) {
 	service := &stubMLSStateService{deliveries: []mlsstate.Delivery{{ID: "welcome-example", ConversationID: "conversation-example", Epoch: 1, WelcomeData: []byte{1}, CreatedAt: time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)}}}
 	authenticator := &stubChatAuthenticator{claims: auth.AccessTokenClaims{AccountID: "account-example", DeviceID: "device-example", SessionID: "session-example"}}
@@ -47,6 +76,18 @@ func TestClaimWelcomeUsesAuthenticatedDevice(t *testing.T) {
 	if service.claimAccountID != "account-example" || service.claimDeviceID != "device-example" {
 		t.Fatalf("unexpected claim subject: %q %q", service.claimAccountID, service.claimDeviceID)
 	}
+}
+
+type recordingMLSStateService struct {
+	stubMLSStateService
+	commit mlsstate.Commit
+	state  mlsstate.GroupState
+}
+
+func (service *recordingMLSStateService) Commit(_ context.Context, _ string, _ string, commit mlsstate.Commit) (mlsstate.GroupState, error) {
+	service.commitCalls++
+	service.commit = commit
+	return service.state, nil
 }
 
 type stubMLSStateService struct {

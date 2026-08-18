@@ -35,7 +35,7 @@ type mlsStateHandler struct {
 
 type commitMLSStateRequest struct {
 	Epoch          int64            `json:"epoch"`
-	GroupInfo      string           `json:"group_info"`
+	GroupInfo      *string          `json:"group_info"`
 	CommitData     string           `json:"commit"`
 	Welcomes       []welcomeRequest `json:"welcomes"`
 	RemovedDevices []string         `json:"removed_device_ids"`
@@ -53,7 +53,7 @@ type welcomeRequest struct {
 type groupStateResponse struct {
 	ConversationID string    `json:"conversation_id"`
 	Epoch          int64     `json:"epoch"`
-	GroupInfo      string    `json:"group_info"`
+	GroupInfo      *string   `json:"group_info"`
 	CommitData     string    `json:"commit"`
 	CommittedAt    time.Time `json:"committed_at"`
 }
@@ -102,10 +102,18 @@ func (h mlsStateHandler) commit(w http.ResponseWriter, r *http.Request) {
 	if !decodeMLSStateRequest(w, r, &request) {
 		return
 	}
-	groupInfo, err := base64.RawStdEncoding.DecodeString(request.GroupInfo)
-	if err != nil {
-		writeError(w, r, http.StatusBadRequest, "invalid_request", "group_info must be base64")
-		return
+	var groupInfo []byte
+	if request.GroupInfo != nil {
+		if *request.GroupInfo == "" {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "group_info must be non-empty base64 or null")
+			return
+		}
+		decoded, err := base64.RawStdEncoding.DecodeString(*request.GroupInfo)
+		if err != nil || len(decoded) == 0 {
+			writeError(w, r, http.StatusBadRequest, "invalid_request", "group_info must be non-empty base64 or null")
+			return
+		}
+		groupInfo = decoded
 	}
 	commitData, err := base64.RawStdEncoding.DecodeString(request.CommitData)
 	if err != nil {
@@ -257,5 +265,10 @@ func toProposalResponse(proposal mlsstate.Proposal) proposalResponse {
 	return proposalResponse{ID: proposal.ID, ConversationID: proposal.ConversationID, AuthorAccountID: proposal.AuthorAccountID, AuthorDeviceID: proposal.AuthorDeviceID, BaseEpoch: proposal.BaseEpoch, Proposal: base64.RawStdEncoding.EncodeToString(proposal.Data), CreatedAt: proposal.CreatedAt}
 }
 func toGroupStateResponse(state mlsstate.GroupState) groupStateResponse {
-	return groupStateResponse{ConversationID: state.ConversationID, Epoch: state.Epoch, GroupInfo: base64.RawStdEncoding.EncodeToString(state.GroupInfo), CommitData: base64.RawStdEncoding.EncodeToString(state.CommitData), CommittedAt: state.CommittedAt}
+	var groupInfo *string
+	if state.GroupInfo != nil {
+		encoded := base64.RawStdEncoding.EncodeToString(state.GroupInfo)
+		groupInfo = &encoded
+	}
+	return groupStateResponse{ConversationID: state.ConversationID, Epoch: state.Epoch, GroupInfo: groupInfo, CommitData: base64.RawStdEncoding.EncodeToString(state.CommitData), CommittedAt: state.CommittedAt}
 }

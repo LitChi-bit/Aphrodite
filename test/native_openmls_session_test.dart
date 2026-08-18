@@ -63,6 +63,10 @@ void main() {
       conversationId: 'conversation-1',
       handshake: <int>[13, 14],
     );
+    final appliedProposal = await session.applyProposal(
+      conversationId: 'conversation-1',
+      proposal: <int>[13, 14],
+    );
     await session.applyGroupState(
       conversationId: 'conversation-1',
       state: OpenMlsGroupState(
@@ -82,7 +86,8 @@ void main() {
     expect(welcome.groupInfo, isNull);
     expect(joined, 'conversation-1'.codeUnits);
     expect(proposal, <int>[18, 19]);
-    expect(addProposal, <int>[20, 21]);
+    expect(addProposal.proposal, <int>[20, 21]);
+    expect(addProposal.epoch, 1);
     expect(updateProposal, <int>[22, 23]);
     expect(encrypted.ciphertext, <int>[7, 8]);
     expect(encrypted.scheme, nativeOpenMlsCiphersuite);
@@ -97,13 +102,14 @@ void main() {
     expect(plaintext, <int>[98, 105, 110, 97, 114, 121, 0]);
     expect(handshake.kind, 'proposal_stored');
     expect(handshake.epoch, 1);
+    expect(appliedProposal.epoch, 1);
     expect(commit.commit, <int>[15, 16]);
     expect(commit.welcome, isNull);
     expect(commit.groupInfo, <int>[17]);
     expect(commit.epoch, 2);
     await session.removeLocalGroup(conversationId: 'conversation-1');
     await session.destroyDeviceState();
-    expect(native.releasedBuffers, 16);
+    expect(native.releasedBuffers, 17);
 
     await session.close();
     expect(native.closed, isTrue);
@@ -143,6 +149,25 @@ void main() {
       throwsA(isA<NativeOpenMlsException>()),
     );
     expect(native.joinGroupCalls, 0);
+    expect(native.releasedBuffers, 0);
+
+    await session.close();
+  });
+
+  test('rejects a noncanonical proposal conversation before FFI', () async {
+    final native = _FakeNativeOpenMlsApi();
+    final session = NativeOpenMlsSession(
+      bindings: native,
+      appSupportDir: r'C:\Aphrodite\state',
+    )..open();
+
+    await expectLater(
+      session.applyProposal(
+        conversationId: ' conversation-1 ',
+        proposal: <int>[13, 14],
+      ),
+      throwsA(isA<NativeOpenMlsException>()),
+    );
     expect(native.releasedBuffers, 0);
 
     await session.close();
@@ -269,7 +294,7 @@ final class _FakeNativeOpenMlsApi implements NativeOpenMlsApi {
       _jsonBuffer(<String, dynamic>{
         'abi_version': 1,
         'ok': true,
-        'data': <String, dynamic>{'proposal': '1415'},
+        'data': <String, dynamic>{'proposal': '1415', 'epoch': 1},
         'error': null,
       });
 

@@ -4,8 +4,12 @@
 //! only serialized MLS protocol bytes and public metadata.
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Mutex, RwLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, OnceLock, RwLock, Weak,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -53,6 +57,43 @@ impl PrivateStatePath {
     pub fn as_path(&self) -> &Path {
         &self.0
     }
+
+    fn operation_lock_key(&self) -> Result<PathBuf, OpenMlsError> {
+        let parent = self.0.parent().ok_or(OpenMlsError::MissingStateDirectory)?;
+        std::fs::canonicalize(parent)
+            .map(|directory| directory.join("aphrodite-openmls.sqlite3"))
+            .map_err(|error| OpenMlsError::StateDirectoryCanonicalization(error.to_string()))
+    }
+}
+
+struct SharedStateLifecycle {
+    operation_lock: Mutex<()>,
+    generation: AtomicU64,
+}
+
+static STATE_LIFECYCLES: OnceLock<Mutex<HashMap<PathBuf, Weak<SharedStateLifecycle>>>> =
+    OnceLock::new();
+
+fn state_lifecycle_for(
+    state_path: &PrivateStatePath,
+) -> Result<Arc<SharedStateLifecycle>, OpenMlsError> {
+    let key = state_path.operation_lock_key()?;
+    let registry = STATE_LIFECYCLES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut lifecycles = registry
+        .lock()
+        .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+
+    lifecycles.retain(|_, lifecycle| lifecycle.strong_count() > 0);
+    if let Some(lifecycle) = lifecycles.get(&key).and_then(Weak::upgrade) {
+        return Ok(lifecycle);
+    }
+
+    let lifecycle = Arc::new(SharedStateLifecycle {
+        operation_lock: Mutex::new(()),
+        generation: AtomicU64::new(0),
+    });
+    lifecycles.insert(key, Arc::downgrade(&lifecycle));
+    Ok(lifecycle)
 }
 
 /// A public KeyPackage and an application-layer signature for server binding.
@@ -80,6 +121,26 @@ impl OpenMlsWelcomeBundle {
     }
     pub fn group_info(&self) -> Option<&[u8]> {
         self.group_info.as_deref()
+    }
+}
+
+/// Public material produced when creating a pending MLS Add proposal.
+///
+/// The epoch is read from the same native group state that signed and persisted
+/// the proposal, so callers never infer it from a separate state query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenMlsAddProposalBundle {
+    proposal: Vec<u8>,
+    epoch: u64,
+}
+
+impl OpenMlsAddProposalBundle {
+    pub fn proposal(&self) -> &[u8] {
+        &self.proposal
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 }
 
@@ -211,16 +272,30 @@ impl OpenMlsDeviceIdentity {
 /// It deliberately does not expose the provider, storage, or private signer.
 pub struct NativeMlsEngine {
     provider: NativeMlsProvider,
-    device_identity: RwLock<Option<OpenMlsDeviceIdentity>>,
-    operation_lock: Mutex<()>,
+    device_identity: RwLock<Option<CachedDeviceIdentity>>,
+    lifecycle: Arc<SharedStateLifecycle>,
+}
+
+#[derive(Clone)]
+struct CachedDeviceIdentity {
+    identity: OpenMlsDeviceIdentity,
+    generation: u64,
 }
 
 impl NativeMlsEngine {
     pub fn open(state_path: &PrivateStatePath) -> Result<Self, OpenMlsError> {
+        let lifecycle = state_lifecycle_for(state_path)?;
+        let _opening = lifecycle
+            .operation_lock
+            .lock()
+            .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
+        let provider = NativeMlsProvider::open(state_path)?;
+        drop(_opening);
+
         Ok(Self {
-            provider: NativeMlsProvider::open(state_path)?,
+            provider,
             device_identity: RwLock::new(None),
-            operation_lock: Mutex::new(()),
+            lifecycle,
         })
     }
 
@@ -229,6 +304,7 @@ impl NativeMlsEngine {
         device_id: impl AsRef<str>,
     ) -> Result<OpenMlsDeviceIdentity, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -236,7 +312,10 @@ impl NativeMlsEngine {
         *self
             .device_identity
             .write()
-            .map_err(|_| OpenMlsError::IdentityLockPoisoned)? = Some(identity.clone());
+            .map_err(|_| OpenMlsError::IdentityLockPoisoned)? = Some(CachedDeviceIdentity {
+            identity: identity.clone(),
+            generation: self.lifecycle.generation.load(Ordering::Acquire),
+        });
         Ok(identity)
     }
 
@@ -246,6 +325,7 @@ impl NativeMlsEngine {
     /// never derived from user-visible names and must be globally unique.
     pub fn create_group(&self, conversation_id: impl AsRef<str>) -> Result<Vec<u8>, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -282,6 +362,7 @@ impl NativeMlsEngine {
         plaintext: &[u8],
     ) -> Result<OpenMlsApplicationMessage, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -322,6 +403,7 @@ impl NativeMlsEngine {
         leaf_index: u32,
     ) -> Result<Vec<u8>, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -343,6 +425,7 @@ impl NativeMlsEngine {
         conversation_id: impl AsRef<str>,
     ) -> Result<Vec<u8>, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -363,14 +446,16 @@ impl NativeMlsEngine {
         &self,
         conversation_id: impl AsRef<str>,
         key_package_bytes: &[u8],
-    ) -> Result<Vec<u8>, OpenMlsError> {
+    ) -> Result<OpenMlsAddProposalBundle, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
         let group_id = group_id_from_conversation_id(conversation_id)?;
         let mut group = MlsGroup::load(self.provider.storage(), &group_id)?
             .ok_or(OpenMlsError::GroupNotFound)?;
+        let epoch = group.epoch().as_u64();
         let mut serialized = key_package_bytes;
         let key_package = KeyPackageIn::tls_deserialize(&mut serialized)
             .map_err(|error| OpenMlsError::ProtocolMaterialParsing(error.to_string()))?
@@ -384,9 +469,10 @@ impl NativeMlsEngine {
         let (proposal, _) = group
             .propose_add_member(&self.provider, &signer, &key_package)
             .map_err(|error| OpenMlsError::ProposalCreation(error.to_string()))?;
-        proposal
+        let proposal = proposal
             .tls_serialize_detached()
-            .map_err(OpenMlsError::TlsSerialization)
+            .map_err(OpenMlsError::TlsSerialization)?;
+        Ok(OpenMlsAddProposalBundle { proposal, epoch })
     }
 
     pub fn add_member(
@@ -395,6 +481,7 @@ impl NativeMlsEngine {
         key_package_bytes: &[u8],
     ) -> Result<OpenMlsWelcomeBundle, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -438,6 +525,7 @@ impl NativeMlsEngine {
 
     pub fn join_group(&self, welcome_bytes: &[u8]) -> Result<Vec<u8>, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -472,6 +560,7 @@ impl NativeMlsEngine {
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -507,6 +596,7 @@ impl NativeMlsEngine {
         handshake_message: &[u8],
     ) -> Result<OpenMlsHandshakeResult, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -551,6 +641,7 @@ impl NativeMlsEngine {
         commit: &[u8],
     ) -> Result<u64, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -608,6 +699,7 @@ impl NativeMlsEngine {
         conversation_id: impl AsRef<str>,
     ) -> Result<OpenMlsCommitBundle, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -652,6 +744,7 @@ impl NativeMlsEngine {
     /// server roster or alter any other device's state.
     pub fn destroy_device_state(&self) -> Result<(), OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -671,11 +764,13 @@ impl NativeMlsEngine {
             .device_identity
             .write()
             .map_err(|_| OpenMlsError::IdentityLockPoisoned)? = None;
+        self.lifecycle.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
     pub fn remove_local_group(&self, conversation_id: impl AsRef<str>) -> Result<(), OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -693,6 +788,7 @@ impl NativeMlsEngine {
         expires_at: u64,
     ) -> Result<Vec<OpenMlsKeyPackage>, OpenMlsError> {
         let _operation = self
+            .lifecycle
             .operation_lock
             .lock()
             .map_err(|_| OpenMlsError::OperationLockPoisoned)?;
@@ -741,11 +837,17 @@ impl NativeMlsEngine {
     }
 
     fn require_device_identity(&self) -> Result<OpenMlsDeviceIdentity, OpenMlsError> {
-        self.device_identity
+        let current_generation = self.lifecycle.generation.load(Ordering::Acquire);
+        let cached = self
+            .device_identity
             .read()
             .map_err(|_| OpenMlsError::IdentityLockPoisoned)?
             .clone()
-            .ok_or(OpenMlsError::DeviceNotInitialized)
+            .ok_or(OpenMlsError::DeviceNotInitialized)?;
+        if cached.generation != current_generation {
+            return Err(OpenMlsError::DeviceNotInitialized);
+        }
+        Ok(cached.identity)
     }
 }
 
@@ -1049,6 +1151,10 @@ pub enum OpenMlsError {
     EmptyApplicationMessage,
     #[error("the native MLS state directory must be absolute")]
     RelativeStateDirectory,
+    #[error("the native MLS state file has no parent directory")]
+    MissingStateDirectory,
+    #[error("failed to canonicalize the native MLS state directory: {0}")]
+    StateDirectoryCanonicalization(String),
     #[error("device ID must not be empty")]
     EmptyDeviceId,
     #[error("the persisted device identity has no matching signature key pair")]
@@ -1144,17 +1250,14 @@ mod tests {
 
     #[test]
     fn stores_private_mls_state_under_the_native_support_directory() {
-        let path = PrivateStatePath::from_app_support_dir(
-            "/var/mobile/Containers/Data/Application/example/Library/Application Support",
-        )
-        .expect("absolute app support directory is valid");
+        let support_dir = std::env::temp_dir().join("aphrodite-openmls-test-support");
+        assert!(support_dir.is_absolute());
+        let path = PrivateStatePath::from_app_support_dir(&support_dir)
+            .expect("absolute app support directory is valid");
 
         assert_eq!(
             path.as_path(),
-            Path::new(
-                "/var/mobile/Containers/Data/Application/example/Library/Application Support"
-            )
-            .join("aphrodite-openmls.sqlite3")
+            support_dir.join("aphrodite-openmls.sqlite3")
         );
     }
 
@@ -1228,6 +1331,68 @@ mod tests {
         reopened
             .read_device_signer(&restored)
             .expect("private signer remains available after reopen");
+    }
+
+    #[test]
+    fn engines_for_the_same_state_path_share_one_operation_lock() {
+        let support_dir = TempDir::new().expect("temporary support directory");
+        let state_path = PrivateStatePath::from_app_support_dir(support_dir.path())
+            .expect("temporary directory is absolute");
+        let first_engine = NativeMlsEngine::open(&state_path).expect("first engine opens");
+        let second_engine = NativeMlsEngine::open(&state_path).expect("second engine opens");
+
+        assert!(Arc::ptr_eq(
+            &first_engine.lifecycle,
+            &second_engine.lifecycle
+        ));
+    }
+
+    #[test]
+    fn engines_for_different_state_paths_use_independent_operation_locks() {
+        let first_support_dir = TempDir::new().expect("first temporary support directory");
+        let second_support_dir = TempDir::new().expect("second temporary support directory");
+        let first_state_path = PrivateStatePath::from_app_support_dir(first_support_dir.path())
+            .expect("first temporary directory is absolute");
+        let second_state_path = PrivateStatePath::from_app_support_dir(second_support_dir.path())
+            .expect("second temporary directory is absolute");
+        let first_engine = NativeMlsEngine::open(&first_state_path).expect("first engine opens");
+        let second_engine = NativeMlsEngine::open(&second_state_path).expect("second engine opens");
+
+        assert!(!Arc::ptr_eq(
+            &first_engine.lifecycle,
+            &second_engine.lifecycle
+        ));
+    }
+
+    #[test]
+    fn concurrent_engine_opens_share_migration_and_identity_initialization() {
+        let support_dir = TempDir::new().expect("temporary support directory");
+        let state_path = PrivateStatePath::from_app_support_dir(support_dir.path())
+            .expect("temporary directory is absolute");
+        let barrier = Arc::new(Barrier::new(2));
+        let first_state_path = state_path.clone();
+        let second_state_path = state_path.clone();
+        let first_barrier = Arc::clone(&barrier);
+        let second_barrier = Arc::clone(&barrier);
+
+        let first = std::thread::spawn(move || {
+            first_barrier.wait();
+            let engine = NativeMlsEngine::open(&first_state_path).expect("first engine opens");
+            engine
+                .initialize_device("device-shared")
+                .expect("first initialization succeeds")
+        });
+        let second = std::thread::spawn(move || {
+            second_barrier.wait();
+            let engine = NativeMlsEngine::open(&second_state_path).expect("second engine opens");
+            engine
+                .initialize_device("device-shared")
+                .expect("second initialization succeeds")
+        });
+
+        let first_identity = first.join().expect("first thread completes");
+        let second_identity = second.join().expect("second thread completes");
+        assert_eq!(first_identity, second_identity);
     }
 
     #[test]
@@ -1356,7 +1521,7 @@ mod tests {
                 .verify_signature(
                     CIPHERSUITE.signature_algorithm(),
                     &signed_payload,
-                    identity.signature_public_key(),
+                    identity.identity.signature_public_key(),
                     package.signature(),
                 )
                 .expect("application signature verifies");
@@ -1531,9 +1696,10 @@ mod tests {
         let add_proposal = creator
             .propose_add_member(conversation_id, proposal_key_package.key_package())
             .expect("creator creates a signed add proposal");
-        assert!(!add_proposal.is_empty());
+        assert!(!add_proposal.proposal().is_empty());
+        assert_eq!(add_proposal.epoch(), 1);
         let add_proposal_result = joiner
-            .apply_handshake_message(conversation_id, &add_proposal)
+            .apply_handshake_message(conversation_id, add_proposal.proposal())
             .expect("joiner validates and stores add proposal");
         assert_eq!(add_proposal_result.kind(), "proposal_stored");
 
@@ -1743,6 +1909,37 @@ mod tests {
             )
             .expect("identity table is readable");
         assert_eq!(identities, 1);
+    }
+
+    #[test]
+    fn destroy_invalidates_other_handles_cached_device_identity() {
+        let support_dir = TempDir::new().expect("temporary support directory");
+        let state_path =
+            PrivateStatePath::from_app_support_dir(support_dir.path()).expect("state path");
+        let destroying_engine =
+            NativeMlsEngine::open(&state_path).expect("destroying engine opens");
+        let surviving_engine = NativeMlsEngine::open(&state_path).expect("surviving engine opens");
+        destroying_engine
+            .initialize_device("device-shared-destroy")
+            .expect("identity initializes");
+        surviving_engine
+            .initialize_device("device-shared-destroy")
+            .expect("identity restores");
+        destroying_engine
+            .destroy_device_state()
+            .expect("device state destroys");
+        let now = unix_timestamp().expect("clock is valid");
+
+        assert!(matches!(
+            surviving_engine.generate_key_packages(1, now + 3600),
+            Err(OpenMlsError::DeviceNotInitialized)
+        ));
+        surviving_engine
+            .initialize_device("device-shared-destroy")
+            .expect("surviving engine reinitializes");
+        assert!(surviving_engine
+            .generate_key_packages(1, now + 3600)
+            .is_ok());
     }
 
     #[test]

@@ -9,9 +9,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const columns = `id, account_id, device_id, ciphersuite, key_package, signature, created_at, expires_at, consumed_at`
-const packageColumns = `package.id, package.account_id, package.device_id, package.ciphersuite, package.key_package, package.signature, package.created_at, package.expires_at, package.consumed_at`
-const packageReturningColumns = `package.id, package.account_id, package.device_id, package.ciphersuite, package.key_package, package.signature, package.created_at, package.expires_at, package.consumed_at`
+const columns = `id, account_id, device_id, ciphersuite, key_package, signature, created_at, expires_at, consumed_at, consumed_by_account_id, consumed_by_device_id, consumed_by_session_id`
+const packageColumns = `package.id, package.account_id, package.device_id, package.ciphersuite, package.key_package, package.signature, package.created_at, package.expires_at, package.consumed_at, package.consumed_by_account_id, package.consumed_by_device_id, package.consumed_by_session_id`
+const packageReturningColumns = `package.id, package.account_id, package.device_id, package.ciphersuite, package.key_package, package.signature, package.created_at, package.expires_at, package.consumed_at, package.consumed_by_account_id, package.consumed_by_device_id, package.consumed_by_session_id`
 
 type PostgresRepository struct {
 	pool *pgxpool.Pool
@@ -77,7 +77,7 @@ func (repository *PostgresRepository) ListAvailable(ctx context.Context, account
 	return collect(rows)
 }
 
-func (repository *PostgresRepository) Claim(ctx context.Context, accountID string, limit int, now time.Time) ([]KeyPackage, error) {
+func (repository *PostgresRepository) Claim(ctx context.Context, targetAccountID, requesterAccountID, requesterDeviceID, requesterSessionID string, limit int, now time.Time) ([]KeyPackage, error) {
 	if err := ValidateLimit(limit); err != nil {
 		return nil, err
 	}
@@ -98,13 +98,13 @@ func (repository *PostgresRepository) Claim(ctx context.Context, accountID strin
 		FOR UPDATE OF package SKIP LOCKED
 	), claimed AS (
 		UPDATE mls_key_packages package
-		SET consumed_at = $2
+		SET consumed_at = $2, consumed_by_account_id = $4, consumed_by_device_id = $5, consumed_by_session_id = $6
 		FROM candidates
 		WHERE package.id = candidates.id
 		RETURNING `+packageReturningColumns+`
 	)
 	SELECT `+columns+` FROM claimed
-	ORDER BY expires_at ASC, created_at ASC, id ASC`, accountID, now, limit)
+	ORDER BY expires_at ASC, created_at ASC, id ASC`, targetAccountID, now, limit, requesterAccountID, requesterDeviceID, requesterSessionID)
 	if err != nil {
 		return nil, fmt.Errorf("claim key packages: %w", err)
 	}
@@ -140,7 +140,7 @@ func collect(rows pgx.Rows) ([]KeyPackage, error) {
 
 func scan(row rowScanner) (KeyPackage, error) {
 	var item KeyPackage
-	if err := row.Scan(&item.ID, &item.AccountID, &item.DeviceID, &item.Ciphersuite, &item.Package, &item.Signature, &item.CreatedAt, &item.ExpiresAt, &item.ConsumedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.AccountID, &item.DeviceID, &item.Ciphersuite, &item.Package, &item.Signature, &item.CreatedAt, &item.ExpiresAt, &item.ConsumedAt, &item.ConsumedByAccountID, &item.ConsumedByDeviceID, &item.ConsumedBySessionID); err != nil {
 		return KeyPackage{}, err
 	}
 	return item, nil
